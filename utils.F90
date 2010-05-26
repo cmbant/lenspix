@@ -894,6 +894,13 @@
   
   logical file_units(file_units_start:file_units_end)
 
+  INTERFACE CONCAT
+    module procedure concat_s, concat_s_n_s_n_s_n_s_n
+    
+  END INTERFACE
+
+
+
   contains
 
  function new_file_unit()
@@ -913,7 +920,7 @@
    end if
   end do 
   
-  stop 'No unused file unit numbers'
+  call mpiStop('No unused file unit numbers')
   
  end function new_file_unit
 
@@ -933,31 +940,56 @@
 
   end function GetParamCount
 
+  function GetMpiRank()
+  integer GetMpiRank
+#ifdef MPI 
+   integer ierror
+   call mpi_comm_rank(mpi_comm_world,GetMPIrank,ierror)
+#else
+    GetMpiRank=0
+#endif    
+   
+  end function GetMpiRank
+
   function IsMainMPI()
    logical IsMainMPI
-#ifdef MPI 
-   integer ierror, MPIrank
-    call mpi_comm_rank(mpi_comm_world,MPIrank,ierror)
-    IsMainMPI = MPIrank==0
-#else
-    IsMainMPI = .true.
-#endif    
 
+   IsMainMPI =  GetMpiRank() == 0
+   
   end function IsMainMPI
 
   subroutine MpiStop(Msg)
    character(LEN=*), intent(in), optional :: Msg
    integer i
+#ifdef MPI 
+   integer ierror, MpiRank
+#endif
 
    if (present(Msg)) write(*,*) trim(Msg)
-
-#ifdef MPIPIX
-    call mpi_finalize(i)
+   
+#ifdef MPI
+    call mpi_comm_rank(mpi_comm_world,MPIrank,ierror)
+    write (*,*) 'MpiStop: ', MpiRank
+    call MPI_ABORT(MPI_COMM_WORLD,i)
 #endif
     i=1     !put breakpoint on this line to debug
     stop
     
  end subroutine MpiStop
+ 
+   subroutine MpiStat(MpiID, MpiSize)
+   implicit none
+   integer MpiID,MpiSize  
+#ifdef MPI  
+   integer ierror
+        call mpi_comm_rank(mpi_comm_world,MpiID,ierror)
+        if (ierror/=MPI_SUCCESS) stop 'MpiStat: MPI rank'
+        call mpi_comm_size(mpi_comm_world,MpiSize,ierror)
+#else
+  MpiID=0
+  MpiSize=1   
+#endif
+  end subroutine MpiStat
  
 
   function GetParam(i)
@@ -972,7 +1004,7 @@
    end if
   end function GetParam
 
-  function concat(S1,S2,S3,S4,S5,S6)
+  function concat_s(S1,S2,S3,S4,S5,S6) result(concat)
    character(LEN=*), intent(in) :: S1, S2
    character(LEN=*), intent(in) , optional :: S3, S4, S5, S6
    character(LEN = 1000) concat
@@ -991,8 +1023,39 @@
      end if
    end if
 
-  end function concat
+  end function concat_s
 
+ function concat_s_n_s_n_s_n_s_n(S1,N2,S3,N4,S5,N6,S7,N8,S9) result(concat)
+   character(LEN=*), intent(in) :: S1
+   integer, intent(in) :: N2
+   character(LEN=*), intent(in) , optional :: S3, S5, S7, S9
+   integer, intent(in), optional ::N4,N6,N8
+   character(LEN = 1000) concat
+   
+   concat = trim(S1) //trim(IntToStr(N2))
+     if (present(S3)) then
+    concat = trim(concat) // S3
+     if (present(N4)) then
+       concat = trim(concat) // trim(IntToStr(N4))
+       if (present(S5)) then
+         concat = trim(concat) // S5
+           if (present(N6)) then
+             concat = trim(concat) // trim(intToStr(N6))
+             if (present(S7)) then
+             concat = trim(concat) // S7
+              if (present(N8)) then
+               concat = trim(concat) // trim(intToStr(N8))
+              if (present(S9)) then
+               concat = trim(concat) // S9
+              end if       
+           end if
+       end if
+     end if
+   end if
+   end if
+   end if
+   
+ end  function concat_s_n_s_n_s_n_s_n
 
   subroutine Exchange(i1,i2)
    integer i1,i2,tmp
@@ -1033,6 +1096,25 @@
    !OK, so can probably do with with a format statement too... 
   end function numcat
 
+  function LogicalToint(B)
+   integer LogicalToint
+   logical, intent(in) :: B
+   
+   if (B) then
+    LogicalToInt=1
+   else
+    LogicalToint=0
+   end if  
+   
+  end function LogicalToInt
+ 
+  function IntToLogical(I)
+   integer, intent(in) :: I
+   logical IntToLogical
+   
+   IntToLogical = I /= 0
+   
+  end  function IntToLogical
  
   function IntToStr(I)
    integer , intent(in) :: I
@@ -1248,8 +1330,8 @@
    open(unit=aunit,file=aname,form=mode,status='old', err=500)
    return
 
-500 write(*,*) 'File not found: '//trim(aname)
-    stop
+500 call MpiStop('File not found: '//trim(aname))
+    
 
  end subroutine OpenFile
  
@@ -1296,8 +1378,8 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
 
    return
 
-500 write(*,*) 'Error creating file '//trim(aname)
-    stop
+500 call MpiStop('Error creating file '//trim(aname))
+    
 
  end subroutine CreateFile
 
@@ -1321,8 +1403,8 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
 
    return
 
-500 write(*,*) 'Error creatinging or opening '//trim(aname)
-    stop
+500 call MpiStop('Error creatinging or opening '//trim(aname))
+    
 
  end subroutine CreateOpenFile
 
@@ -1489,7 +1571,7 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
         real r
 
         i = nint(x*2)
-        if (abs(i-x*2) > 1e-4) stop 'LogGamma function for half integral only'
+        if (abs(i-x*2) > 1e-4) call MpiStop('LogGamma function for half integral only')
         if (mod(i,2) == 0) then
            r=0
            do j = 2, i/2-1
@@ -1792,7 +1874,7 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
  
       if (l2 < abs(m2) .or. l3 < m3) then
       ier = -1
-      stop 'error ier = -1'
+      call MpiStop('error ier = -1')
       return
       end if
 
@@ -1803,7 +1885,7 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
       if (l1min >= l1max) then
        if (l1min/=l1max) then
        ier = -1
-        stop 'error ier = -1'
+        call MpiStop('error ier = -1')
        return
        end if
 
@@ -2024,7 +2106,7 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
       end do
       return 
 #else
-   stop 'must compile with -DTHREEJ to use 3j routine'
+   call MpiStop('must compile with -DTHREEJ to use 3j routine')
 #endif
 
     end subroutine GetThreeJs
@@ -2034,14 +2116,206 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
   end module AMLutils
  
   
+MODULE Ziggurat
+! Marsaglia & Tsang generator for random normals & random exponentials.
+! Translated from C by Alan Miller (amiller@bigpond.net.au)
+
+! Marsaglia, G. & Tsang, W.W. (2000) `The ziggurat method for generating
+! random variables', J. Statist. Software, v5(8).
+
+! This is an electronic journal which can be downloaded from:
+! http://www.jstatsoft.org/v05/i08
+
+! N.B. It is assumed that all integers are 32-bit.
+! N.B. The value of M2 has been halved to compensate for the lack of
+!      unsigned integers in Fortran.
+
+! Latest version - 1 January 2001
+!
+! AL: useful material at http://en.wikipedia.org/wiki/Ziggurat_algorithm
+   IMPLICIT NONE
+
+   PRIVATE
+
+   INTEGER,  PARAMETER  ::  DP=SELECTED_REAL_KIND( 12, 60 )
+   REAL(DP), PARAMETER  ::  m1=2147483648.0_DP,   m2=2147483648.0_DP,      &
+                            half=0.5_DP
+   REAL(DP)             ::  dn=3.442619855899_DP, tn=3.442619855899_DP,    &
+                            vn=0.00991256303526217_DP,                     &
+                            q,                    de=7.697117470131487_DP, &
+                            te=7.697117470131487_DP,                       &
+                            ve=0.003949659822581572_DP
+   INTEGER,  SAVE       ::  iz, jz, jsr=123456789, kn(0:127),              &
+                            ke(0:255), hz
+   REAL(DP), SAVE       ::  wn(0:127), fn(0:127), we(0:255), fe(0:255)
+   LOGICAL,  SAVE       ::  initialized=.FALSE.
+
+   PUBLIC  :: zigset, shr3, uni, rnor, rexp
+
+
+CONTAINS
+
+
+SUBROUTINE zigset( jsrseed )
+
+   INTEGER, INTENT(IN)  :: jsrseed
+
+   INTEGER  :: i
+
+   !  Set the seed
+   jsr = jsrseed
+
+   !  Tables for RNOR
+   q = vn*EXP(half*dn*dn)
+   kn(0) = (dn/q)*m1
+   kn(1) = 0
+   wn(0) = q/m1
+   wn(127) = dn/m1
+   fn(0) = 1.0_DP
+   fn(127) = EXP( -half*dn*dn )
+   DO  i = 126, 1, -1
+      dn = SQRT( -2.0_DP * LOG( vn/dn + EXP( -half*dn*dn ) ) )
+      kn(i+1) = (dn/tn)*m1
+      tn = dn
+      fn(i) = EXP(-half*dn*dn)
+      wn(i) = dn/m1
+   END DO
+
+   !  Tables for REXP
+   q = ve*EXP( de )
+   ke(0) = (de/q)*m2
+   ke(1) = 0
+   we(0) = q/m2
+   we(255) = de/m2
+   fe(0) = 1.0_DP
+   fe(255) = EXP( -de )
+   DO  i = 254, 1, -1
+      de = -LOG( ve/de + EXP( -de ) )
+      ke(i+1) = m2 * (de/te)
+      te = de
+      fe(i) = EXP( -de )
+      we(i) = de/m2
+   END DO
+   initialized = .TRUE.
+   RETURN
+END SUBROUTINE zigset
+
+
+
+!  Generate random 32-bit integers
+FUNCTION shr3( ) RESULT( ival )
+   INTEGER  ::  ival
+
+   jz = jsr
+   jsr = IEOR( jsr, ISHFT( jsr,  13 ) )
+   jsr = IEOR( jsr, ISHFT( jsr, -17 ) )
+   jsr = IEOR( jsr, ISHFT( jsr,   5 ) )
+   ival = jz + jsr
+   RETURN
+END FUNCTION shr3
+
+
+
+!  Generate uniformly distributed random numbers
+FUNCTION uni( ) RESULT( fn_val )
+   REAL(DP)  ::  fn_val
+
+   fn_val = half + 0.2328306e-9_DP * shr3( )
+   RETURN
+END FUNCTION uni
+
+
+
+!  Generate random normals
+FUNCTION rnor( ) RESULT( fn_val )
+   REAL(DP)             ::  fn_val
+
+   REAL(DP), PARAMETER  ::  r = 3.442620_DP
+   REAL(DP)             ::  x, y
+
+   IF( .NOT. initialized ) CALL zigset( jsr )
+   hz = shr3( )
+   iz = IAND( hz, 127 )
+   IF( ABS( hz ) < kn(iz) ) THEN
+      fn_val = hz * wn(iz)
+   ELSE
+      DO
+         IF( iz == 0 ) THEN
+            DO
+               x = -0.2904764_DP* LOG( uni( ) )
+               y = -LOG( uni( ) )
+               IF( y+y >= x*x ) EXIT
+            END DO
+            fn_val = r+x
+            IF( hz <= 0 ) fn_val = -fn_val
+            RETURN
+         END IF
+         x = hz * wn(iz)
+         IF( fn(iz) + uni( )*(fn(iz-1)-fn(iz)) < EXP(-half*x*x) ) THEN
+            fn_val = x
+            RETURN
+         END IF
+         hz = shr3( )
+         iz = IAND( hz, 127 )
+         IF( ABS( hz ) < kn(iz) ) THEN
+            fn_val = hz * wn(iz)
+            RETURN
+         END IF
+      END DO
+   END IF
+   RETURN
+END FUNCTION rnor
+
+
+
+!  Generate random exponentials
+FUNCTION rexp( ) RESULT( fn_val )
+   REAL(DP)  ::  fn_val
+
+   REAL(DP)  ::  x
+
+   IF( .NOT. initialized ) CALL Zigset( jsr )
+   jz = shr3( )
+   iz = IAND( jz, 255 )
+   IF( ABS( jz ) < ke(iz) ) THEN
+      fn_val = ABS(jz) * we(iz)
+      RETURN
+   END IF
+   DO
+      IF( iz == 0 ) THEN
+         fn_val = 7.69711 - LOG( uni( ) )
+         RETURN
+      END IF
+      x = ABS( jz ) * we(iz)
+      IF( fe(iz) + uni( )*(fe(iz-1) - fe(iz)) < EXP( -x ) ) THEN
+         fn_val = x
+         RETURN
+      END IF
+      jz = shr3( )
+      iz = IAND( jz, 255 )
+      IF( ABS( jz ) < ke(iz) ) THEN
+         fn_val = ABS( jz ) * we(iz)
+         RETURN
+      END IF
+   END DO
+   RETURN
+END FUNCTION rexp
+
+END MODULE ziggurat
+
+  
 
 module Random
  integer :: rand_inst = 0 
+ logical, parameter :: use_ziggurat = .false.
+  !Ziggurat is significantly (3-4x) faster, see Wikipedia for details
+  !Have seem some suspicious things, though couldn't replicate; may be OK..
 
 contains
    
   subroutine initRandom(i)
   use AMLUtils
+  use Ziggurat
   implicit none
   integer, optional, intent(IN) :: i
   integer seed_in,kl,ij
@@ -2066,14 +2340,17 @@ contains
 
       if (Feedback > 0 ) write(*,'(" Random seeds:",1I6,",",1I6," rand_inst:",1I4)') ij,kl,rand_inst
       call rmarin(ij,kl)
+      
+      if (use_ziggurat) call zigset(ij)
   end subroutine initRandom
 
   subroutine RandIndices(indices, nmax, n)
-    integer, intent(in) :: nmax, n
+   use AMLUtils
+     integer, intent(in) :: nmax, n
     integer indices(n),i, ix
     integer tmp(nmax)
  
-    if (n> nmax) stop 'Error in RandIndices, n > nmax'
+    if (n> nmax) call MpiStop('Error in RandIndices, n > nmax')
     do i=1, nmax
        tmp(i)=i
     end do
@@ -2110,11 +2387,17 @@ contains
 
 
   double precision function GAUSSIAN1()
+    use Ziggurat
     implicit none
     double precision R, V1, V2, FAC
     integer, save :: iset = 0
     double precision, save :: gset
 
+    if (use_ziggurat) then
+    
+     Gaussian1 = rnor( )
+    else
+     !Box muller
      if (ISET==0) then
         R=2
         do while (R >= 1.d0)
@@ -2130,7 +2413,7 @@ contains
         GAUSSIAN1=GSET
         ISET=0
       endif
-   
+      end if
       end function GAUSSIAN1
 
 

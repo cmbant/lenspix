@@ -3,7 +3,7 @@
 
 #Intel. Note heap-arrays needs v10+ of compiler, and avoids Seg Faults for large arrays
 F90C     = mpif90
-FFLAGS = -ip -O3 -fpp -error-limit 5 -DMPIPIX -heap-arrays
+FFLAGS = -ip -O3 -fpp -error-limit 5 -DMPIPIX -DMPI -heap-arrays
 #use these lines instead for non-MPI runs
 #F90C     = ifort
 #FFLAGS =  -ip -O3 -fpp -error-limit 5 -heap-arrays

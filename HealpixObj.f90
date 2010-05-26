@@ -8,6 +8,8 @@ module HealpixObj
  use AMLutils
  implicit none
 
+ real(SP), parameter :: mK = 1. !internal units/microK
+ 
  REAL(SP) :: fmissval = -1.6375e-30
  real(DP), parameter :: HO_PI = 3.14159265358979323846264338328d0, &
       HO_twopi=2*HO_pi, HO_fourpi=4*HO_pi
@@ -53,7 +55,7 @@ module HealpixObj
    REAL(SP), DIMENSION(:,:),  POINTER :: PhiCl  
 
  end  type HealpixPower
-
+ 
  type HaarComponents
    
    integer order
@@ -65,13 +67,21 @@ module HealpixObj
 
 contains
 
-   subroutine HealpixPower_Init(P, almax, pol, dolens)
+   subroutine HealpixPower_Init(P, almax, pol, dolens, nofree)
     Type(HealpixPower) P
     integer, intent(in) :: almax
     logical, intent(in) :: pol
     logical, intent(in), optional :: dolens
+    logical, intent(in), optional :: nofree
+    logical dofree
+    
+    if (present(nofree)) then
+     dofree=.not. nofree
+    else
+     dofree = .true. 
+    end if  
       
-     call HealpixPower_Free(P)
+     if (dofree) call HealpixPower_Free(P)
      P%lmax = almax
      P%pol = pol
      P%lens = .false.
@@ -91,13 +101,20 @@ contains
 
    end subroutine HealpixPower_Init
 
+   subroutine HealpixPower_Nullify(P) 
+    Type(HealpixPower) P
+
+    nullify(P%Cl, P%PhiCl)
+   
+   end subroutine HealpixPower_Nullify
+   
    subroutine HealpixPower_Free(P)
     Type(HealpixPower) P
     integer status
 
     deallocate(P%Cl, stat = status)
     deallocate(P%PhiCl, stat = status)
-    nullify(P%Cl, P%PhiCl)
+    call HealpixPower_Nullify(P)
 
    end subroutine HealpixPower_Free
 
@@ -130,7 +147,7 @@ contains
  
     !See how many columns - includes magnetic polarization if four columns
       read(io_unit,'(a)') InLine
-      do l=8,4,-1
+      do l=8,2,-1
          Colnum=l 
          read(InLine,*, end=110) test(1:l)
          exit
@@ -140,7 +157,7 @@ contains
       
       tensors = colnum==5 .or. colnum==7
       if (P%lens .and. colnum /= 6 .and. colnum/=7) stop 'can''t indentify text phi cl columns'
-       
+      if (pol2 .and. colnum<3) stop 'No polarization in C_l file'  
       rewind io_unit
 
       B=0
@@ -149,6 +166,9 @@ contains
       if (dolens2) P%PhiCl = 0
         
       do i=0,lmax
+       if (Colnum==2) then
+        read (io_unit,*,end=118) l, T
+       else
        if (tensors) then
          if (P%lens) then
           read (io_unit,*,end=118) l, T, E, B , TE, phi, phiT
@@ -162,17 +182,21 @@ contains
           read (io_unit,*,end=118) l, T, E, TE
          end if
        end if
-       if (l<= lmax .and. l>=2) then
-         scal=twopi/(l*(l+1))/1e6
+       end if
+   
+       if (l==0) then
+         P%Cl(l,1) = T/mK**2      
+       else if (l<= lmax) then
+         scal=twopi/(l*(l+1))/mK**2
          P%Cl(l,1) = T*scal
-         if (pol2) then
+         if (pol2 .and. l>=2 ) then
          P%Cl(l,2) = E*scal
          P%Cl(l,3) = B*scal
          P%Cl(l,4) = TE*scal
          end if
-         if (P%Lens) then
+         if (P%Lens .and. l>=1) then
              P%PhiCl(l,1) = phi/real(l,dp)**4/1e12/2.726**2
-             P%PhiCl(l,2) = phiT/real(l,dp)**3/1e9/2.726
+             P%PhiCl(l,2) = phiT/real(l,dp)**3/1e6/2.726/mK
          end if
        end if
        enddo
@@ -188,11 +212,17 @@ contains
      integer l
 
      call CreateTxtFile(fname,1)
-     do l=0,P%lmax
        if (P%pol) then
-         write (1,'(1I7,4E17.7)') l,l*(l+1)*P%Cl(l,:)/twopi *1e6
+         write (1,'(1I7,4E17.7)') 0,P%Cl(0,:) *mK**2
        else
-         write (1,'(1I7,1E17.7)') l,l*(l+1)*P%Cl(l,1)/twopi *1e6
+         write (1,'(1I7,1E17.7)') 0,P%Cl(0,1) *mK**2
+       end if
+ 
+     do l=1,P%lmax
+       if (P%pol) then
+         write (1,'(1I7,4E17.7)') l,l*(l+1)*P%Cl(l,:)/twopi *mK**2
+       else
+         write (1,'(1I7,1E17.7)') l,l*(l+1)*P%Cl(l,1)/twopi *mK**2
        end if
      end do
 
@@ -211,7 +241,7 @@ contains
          stop 'HealpixPower_AddPower: must have same sized power spectra' 
      Ptotal%Cl = Ptotal%Cl + P%Cl
      if (AddPhi) then
-       if (.not. PTotal%lens  .or. .not. P%lens) stop 'HealpixPower_AddPower: must both have phi'
+       if (.not. PTotal%lens  .or. .not. P%lens) call MpiStop('HealpixPower_AddPower: must both have phi')
        Ptotal%PhiCl = PTotal%phiCl + P%PhiCl 
      end if
 
@@ -267,6 +297,35 @@ contains
     end do 
 
    end subroutine HealpixAlm2Power
+   
+   subroutine HealpixAlm2CrossPower(A,A2, P)
+    Type(HealpixPower) P
+    Type(HealpixAlm) :: A, A2
+    integer l,i,ix
+
+    if (A%lmax /= A2%lmax) stop 'HealpixAlm2CrossPower: mismatched lmax'
+    if (A%npol /= A2%npol) stop 'HealpixAlm2CrossPower: different pol content'
+    call HealpixPower_Init(P,A%lmax,A%npol==3)
+    
+    P%Cl(0:1,:) = 0
+    do l=0, P%lmax
+     if (l<2) then
+      ix= 1
+     else
+      ix = A%npol
+     end if
+     do i = 1, ix
+      P%Cl(l,i) = ( REAL(A%TEB(i,l,0)*A2%TEB(i,l,0)) &
+            + 2.*SUM(A%TEB(i,l,1:l)*CONJG(A2%TEB(i,l,1:l)) )) / (2.*l + 1.)
+     end do
+     if (ix==3) then
+        P%Cl(l,4) = ( REAL(A%TEB(1,l,0))*REAL(A2%TEB(2,l,0)) &
+            + 2.*SUM(real(A%TEB(1,l,1:l)*CONJG(A2%TEB(2,l,1:l))) ) &
+           ) / (2.*l + 1.)
+      end if
+    end do 
+
+   end subroutine HealpixAlm2CrossPower
 
 
    subroutine HealpixAlm_Init(A,almax,npol,spinmap, HasPhi)
@@ -627,7 +686,6 @@ contains
   subroutine HealpixMap_AddUncorrelatedNoise(M, NoiseMap)
     use Random
     Type(HealpixMap) :: M, NoiseMap
-    real(sp) amp
     integer i
          
     do i=0, M%npix-1
@@ -635,8 +693,8 @@ contains
     end do
   
     if (M%nmaps>1) then
-        if (M%nmaps /= 3) stop 'HealpixMap_AddUncorrelatedNoise: No polarization in map'
-        if (NoiseMap%nmaps /= 3) stop 'HealpixMap_AddUncorrelatedNoise: No polarization in noise map'
+        if (M%nmaps /= 3) call MpiStop('HealpixMap_AddUncorrelatedNoise: No polarization in map')
+        if (NoiseMap%nmaps /= 3) call MpiStop('HealpixMap_AddUncorrelatedNoise: No polarization in noise map')
         do i=0, M%npix-1
          M%TQU(i,2)= M%TQU(i,2) + Gaussian1()*sqrt(NoiseMap%TQU(i,2))
         end do
@@ -785,15 +843,26 @@ contains
   end subroutine HealpixAlm_SimPhi
 
 
-  subroutine HealpixMap_Init(M, npix, nmaps, nested, spinmap, HasPhi)
+  subroutine HealpixMap_Init(M, npix, nmaps, nested, spinmap, HasPhi, pol, nside)
 
     Type(HealpixMap) :: M
-    integer, intent(in) :: npix 
+    integer, intent(in), optional :: npix, nside 
     integer, intent(in), optional :: nmaps, spinmap
-    logical, intent(in), optional :: nested, HasPhi
+    logical, intent(in), optional :: nested, HasPhi, pol
     integer status
 
+    if (present(npix)) then
      M%npix = npix
+     if (present(nside)) then
+      if (M%npix /= 12*nside**2) call MpiStop('HealpixMap_Init: nside and npix specified')
+     end if
+    else
+     if (present(nside)) then
+      M%npix = 12*nside**2
+     else
+      call MpiStop('HealpixMap_Init: must specifc nside or npix')
+     end if  
+    end if 
 
      call HealpixMap_Free(M)
         
@@ -801,6 +870,13 @@ contains
        M%nmaps = nmaps
      else
        M%nmaps = 1
+     end if
+     
+     if (present(pol)) then
+        if (pol) M%nmaps=3
+       if (present(nmaps)) then
+         if (nmaps>1) call MpiStop('HealpixMap_Init: currently only one pol map allowed')
+       end if
      end if
 
      if (present(HasPhi)) then
@@ -816,7 +892,7 @@ contains
         if (nested) M%ordering = ord_nest
      end if
   
-     M%nside = npix2nside(npix)
+     M%nside = npix2nside(M%npix)
      if (present(spinmap)) then
       M%spin = spinmap
      else
@@ -1000,10 +1076,23 @@ contains
 
    call HealpixMap_DeAllocateTQU(M)
 
-   deallocate(M%SpinField, M%Phi, stat=status)
+   !To prevent memory leaks, have to do fail-safe deallocates separately
+   !otherwise can fail on the first one. Thanks Duncan Hanson!
+   deallocate(M%SpinField, stat=status)
+   deallocate(M%Phi, stat=status)
+  
    nullify(M%SpinField,M%Phi)
 
   end subroutine HealpixMap_Free
+
+  subroutine HealpixMap_Nullify(M)
+   Type(HealpixMap) :: M
+  
+   nullify(M%TQU)
+   nullify(M%SpinField,M%Phi)
+
+  end subroutine HealpixMap_Nullify
+
 
   subroutine HealpixMap_ForceRing(M)
     USE pix_tools, ONLY : convert_nest2ring
@@ -1066,10 +1155,10 @@ contains
    end if
    call HealpixMap_ForceRing(InMap)
    call HealpixMap_ForceRing(CutMap)
-   if (InMap%npix /= CutMap%npix) stop 'Map size mismatch'
+   if (InMap%npix /= CutMap%npix) call MpiStop('HealpixMapMulCut: Map size mismatch')
    call HealpixMap_Init(OutMap,InMap%npix,InMap%nmaps)
    outMap%ordering  = ord_ring
-   if (CutMap%nmaps < ix ) stop 'not enough maps'
+   if (CutMap%nmaps < ix ) call MpiStop('HealpixMapMulCut: not enough maps')
    if (present(missval)) then
  
       do j=0, InMap%npix -1
@@ -1157,6 +1246,57 @@ contains
    end subroutine HealpixMap2alm
 
 
+
+   subroutine HealpixMapSet2CrossPowers(H, M, Pows, nmap, almax)
+
+     Type (HealpixInfo) :: H
+     Type(HealpixMap), intent(in) :: M(nmap)
+     Type(HealpixCrossPowers) :: Pows
+     integer, intent(in) :: nmap
+     integer, intent(in) :: almax
+     integer i
+     Type(HealpixMapArray) :: maps(nmap)
+
+!Does not deallocate pows, assumed undefined
+
+     if (nmap<0)  call MpiStop('HealpixMapSet2CrossPowers: must have one or more maps')
+
+     do i=1,nmap
+      call HealpixMap_ForceRing(M(i))
+     end do
+     
+     Pows%nmaps = nmap
+     Pows%lmax = almax
+     
+     Pows%npol = M(1)%nmaps
+     if (Pows%npol /=1 .and. Pows%npol /=3) call MpiStop('HealpixMapSet2CrossPowers: must be scalar or pol')
+
+     do i=1,nmap
+        maps(i)%M => M(i)%TQU
+     end do
+     if (Pows%npol==1) then
+      call maparray2scalcrosspowers(H, almax, maps, Pows,  nmap)
+     else
+      call maparray2crosspowers(H, almax, maps, Pows,  nmap)
+     end if  
+ 
+   end subroutine HealpixMapSet2CrossPowers
+
+
+  subroutine HealpixMap_Smooth(H, MapIn, MapOut, lmax, fwhm)
+       Type(HealpixInfo) :: H
+       Type(HealpixMap) :: MapIn, MapOut
+       integer, intent (in) :: lmax
+       Type(HealpixAlm) :: A
+       real(dp), intent(in) :: fwhm
+       
+      call HealpixMap2Alm(H,MapIn, A, lmax)
+      call HealpixAlm_Smooth(A, fwhm)       
+      call HealpixAlm2Map(H,A, MapOut, MapIn%npix)
+      call HealPixAlm_Free(A)
+      
+  end subroutine HealpixMap_Smooth  
+
   subroutine HealpixAlm2GradientMap(H, A, M, npix, What)
      Type (HealpixInfo) :: H
      Type(HealpixMap) :: M
@@ -1216,7 +1356,7 @@ contains
      real fact
      integer method
      
-     fact = 8. !sufficient for 0.5% accuracy to l=2000
+     fact = 1.5 
      if (present(factor)) fact = factor
      
      method = interp_basic
@@ -1373,6 +1513,20 @@ contains
     deallocate(TQU)
     
  end subroutine HealpixMap_SetToIndexOnly
+ 
+  subroutine HealpixMap_AddPol(M)
+    Type(HealpixMap) :: M
+    REAL(SP), DIMENSION(:), allocatable :: T
+    
+    if (M%nmaps >1 ) call MpiStop('HealpixMap_AddPol:already more than one map')
+    M%nmaps =3
+    allocate(T(0:M%npix-1))
+    T = M%TQU(:,1)
+    call HealpixMap_AllocateTQU(M,3) 
+    M%TQU(:,1) = T
+    deallocate(T)
+    
+ end subroutine HealpixMap_AddPol
  
   subroutine HealpixMap_udgrade(M, Mout, nside_out, pessimistic)
      use udgrade_nr
@@ -1548,6 +1702,28 @@ contains
    end do      
   
  end subroutine HealpixMap_HarrPowerSpec
+
+ subroutine CrossPowersToHealpixPowerArray(CrossPowers,PowerArray, dofree)
+  Type(HealpixCrossPowers) :: CrossPowers
+  Type(HealpixPower) :: PowerArray(*)
+  logical, intent(in), optional :: dofree
+  integer i,j,ix
+  
+    if (CrossPowers%npol>1) call MpiStop('CrossPowersToHealpixPowerArray: not done for pol')
+    ix=0
+      do i=1, CrossPowers%nmaps
+        do j=1,i
+        ix= ix+1
+        call HealpixPower_Init(PowerArray(ix), CrossPowers%lmax, CrossPowers%npol==3, dolens=.false., nofree=.true.)
+        PowerArray(ix)%Cl(:,C_T) = CrossPowers%Ps(i,j)%Cl(:,1,1)
+        if (present(dofree)) then
+         if (dofree) deallocate(CrossPowers%Ps(i,j)%Cl)
+        end if        
+       end do
+    end do   
+    if (dofree) deallocate(CrossPowers%Ps)
+
+ end subroutine CrossPowersToHealpixPowerArray
 
 end module HealpixObj
 

@@ -294,7 +294,6 @@ contains
     use pix_tools, only : Ang2vec
     type(HealpixMap), intent(in) :: M
     character(len=*), intent(in) :: fname
-    type(HealpixMap) degraded
     real ::  n2
     real(dp) :: theta, phi
     integer :: i, j, k, l, xsize, ysize, nxx, nyy
@@ -401,7 +400,7 @@ contains
     type(HealpixCMap) :: cmap
 
 !!ppm starts at top left of image
-  
+
     off = 0
     if (present(pixarr)) then
       PPix => pixarr

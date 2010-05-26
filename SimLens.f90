@@ -19,10 +19,12 @@ program SimLensCMB
  integer, parameter :: lens_interp =1, lens_exact = 2
  integer :: lens_method = lens_interp
  integer :: mpi_division_method = division_equalrows
- integer :: i, interp_method,  rand_seed
+ integer ::  interp_method,  rand_seed
  logical :: err, want_pol
  real :: interp_factor
 #ifdef MPIPIX
+ integer i
+ 
  call mpi_init(i)
 #endif
 
@@ -51,6 +53,7 @@ program SimLensCMB
  
  
  w8name = Ini_Read_String('w8dir')
+ interp_factor=0
  if (lens_method == lens_interp) interp_factor = Ini_Read_Real('interp_factor',3.)
 #ifdef MPIPIX
  mpi_division_method = Ini_Read_Int('mpi_division_method',division_balanced);
@@ -75,7 +78,7 @@ program SimLensCMB
   call HealpixInit(H,nside, lmax,.true., w8dir='', method= mpi_division_method) 
  else
   call HealpixInit(H,nside, lmax,.true., w8dir=w8name,method=mpi_division_method) 
- end if
+ end if 
 
  if (H%MpiID ==0) then !if we are main thread
   !All but main thread stay in HealpixInit
