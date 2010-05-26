@@ -1,6 +1,9 @@
-!Module of useful routines and definitions
-    !April 2006: fix to TList_RealArr_Thin
+!Module of generally useful routines and definitions
+!Antony Lewis, http://cosmologist.info/
 
+!April 2006: fix to TList_RealArr_Thin
+!March 2008: fix to Ranges
+!This version Mar 2008
 
  module Ranges
  !A collection of ranges, consisting of sections of minimum step size
@@ -44,15 +47,24 @@
     Type(Regions) R
     integer status     
 
-     deallocate(R%points,R%dpoints,stat = status)
+     deallocate(R%points,stat = status)
+     deallocate(R%dpoints,stat = status)
+     call Ranges_Nullify(R)
+    
+   end  subroutine Ranges_Free
+
+    
+  subroutine Ranges_Nullify(R)
+   Type(Regions) R
+  
      nullify(R%points)
      nullify(R%dpoints)
      R%count = 0
      R%npoints = 0
      R%has_dpoints = .false.
-    
-   end  subroutine Ranges_Free
+   
 
+  end subroutine Ranges_Nullify
 
    function Ranges_IndexOf(Reg, tau) result(pointstep)
       Type(Regions), intent(in), target :: Reg
@@ -124,19 +136,31 @@
    end subroutine Ranges_GetArray
 
 
-   subroutine Ranges_Getdpoints(Reg)
+   subroutine Ranges_Getdpoints(Reg, half_ends)
       Type(Regions), target :: Reg
+      logical, intent(in), optional :: half_ends
       integer i, status
+      logical halfs
+
+      if (present(half_ends)) then
+        halfs = half_ends
+      else
+        halfs = .true.
+      end if
        
       deallocate(Reg%dpoints,stat = status)
       allocate(Reg%dpoints(Reg%npoints)) 
 
-      Reg%dpoints(1) = (Reg%points(2) - Reg%points(1))/2
       do i=2, Reg%npoints-1
         Reg%dpoints(i) = (Reg%points(i+1) - Reg%points(i-1))/2
       end do
-      Reg%dpoints(Reg%npoints) = (Reg%points(Reg%npoints) - Reg%points(Reg%npoints-1))/2
-
+      if (halfs) then
+       Reg%dpoints(1) = (Reg%points(2) - Reg%points(1))/2
+       Reg%dpoints(Reg%npoints) = (Reg%points(Reg%npoints) - Reg%points(Reg%npoints-1))/2
+      else
+       Reg%dpoints(1) = (Reg%points(2) - Reg%points(1))
+       Reg%dpoints(Reg%npoints) = (Reg%points(Reg%npoints) - Reg%points(Reg%npoints-1))
+     end if
    end subroutine Ranges_Getdpoints
 
 
@@ -195,9 +219,15 @@
 
      if (t_end <= t_start) stop 'Ranges_Add: end must be larger than start'
      if (nstep <=0) stop 'Ranges_Add: nstep must be > 0'
-     if (Reg%Count>= Max_Ranges) stop 'Ranges_Add: Incrsase Max_Ranges'
-     
-     if (Reg%count > 0) NewRegions(1:Reg%count) = Reg%R(1:Reg%count)
+     if (Reg%Count>= Max_Ranges) stop 'Ranges_Add: Increase Max_Ranges'
+
+!avoid IBM compiler bug, from Angel de Vicente
+!    if (Reg%count > 0) NewRegions(1:Reg%count) = Reg%R(1:Reg%count)
+     if (Reg%count > 0) THEN
+         DO i=1,Reg%count
+         NewRegions(i) = Reg%R(i)
+         END DO
+     END IF
      nreg = Reg%count + 1
      AReg=> NewRegions(nreg)
      AReg%Low = t_start
@@ -358,7 +388,7 @@
                min_request = RequestDelta(i)
                max_request = min_request
               end if
-              if (i/= ix) then
+              if (i/= Reg%Count) then  !from i/= ix Mar08
                LastReg => Reg%R(i+1)
                if (RequestDelta(i) >= AReg%delta .and. Diff <= LastReg%Delta_min &
                           .and. LastReg%Delta_min <= max_request) then 
@@ -381,7 +411,8 @@
                LastReg => Reg%R(i-1)
                if (RequestDelta(i) >= AReg%delta .and. Diff <= LastReg%Delta_max &
                           .and. LastReg%Delta_max <= min_request) then
-                   LastReg%Low = AReg%Low
+                   LastReg%High = AReg%High
+                   !AlMat08 LastReg%Low = AReg%Low
                    if (Diff > LastReg%Delta_max*RangeTol) then
                       LastReg%steps =  LastReg%steps + 1
                    end if
@@ -759,7 +790,11 @@
       recursive subroutine QuickSortArr_Real(Arr, Lin, R, index)
       !Sorts an array of pointers to arrays of reals by the value of the index'th entry
       integer, intent(in) :: Lin, R, index
+#ifdef __GFORTRAN__
+      type(real_pointer), dimension(:) :: Arr
+#else
       type(real_pointer), dimension(*) :: Arr
+#endif
       integer I, J, L
       real P
       type(real_pointer) :: temp
@@ -803,7 +838,11 @@
     recursive subroutine QuickSortArr(Arr, Lin, R, index)
       !Sorts an array of pointers to arrays of reals by the value of the index'th entry
       integer, intent(in) :: Lin, R, index
+#ifdef __GFORTRAN__
+      type(double_pointer), dimension(:) :: Arr
+#else
       type(double_pointer), dimension(*) :: Arr
+#endif
       integer I, J, L
       double precision P
       type(double_pointer) :: temp
@@ -864,8 +903,10 @@
 #ifndef NAGF95
 #ifndef GFC
 #ifndef __INTEL_COMPILER_BUILD_DATE
+#ifndef __GFORTRAN__
         integer iargc
         external iargc
+#endif        
 #endif
 #endif
 #endif
@@ -895,7 +936,7 @@
   logical file_units(file_units_start:file_units_end)
 
   INTERFACE CONCAT
-    module procedure concat_s, concat_s_n_s_n_s_n_s_n
+    module procedure concat_s, concat_s_n
     
   END INTERFACE
 
@@ -906,6 +947,7 @@
  function new_file_unit()
   integer i, new_file_unit
   logical, save :: file_units_inited = .false.
+  logical notfree
  
   if (.not. file_units_inited) then
    file_units = .false.
@@ -914,6 +956,8 @@
  
   do i=file_units_start, file_units_end
    if (.not. file_units(i) .and. i/=tmp_file_unit) then
+    inquire(i,opened=notfree)
+    if (notfree) cycle
     file_units(i)=.true.
     new_file_unit = i
     return
@@ -932,6 +976,13 @@
   file_units(i) = .false.
     
  end subroutine CloseFile 
+
+ subroutine ClearFileUnit(i)
+  integer, intent(in) :: i
+  
+  file_units(i) = .false.
+    
+ end subroutine ClearFileUnit
 
   function GetParamCount()
    integer GetParamCount
@@ -990,7 +1041,63 @@
   MpiSize=1   
 #endif
   end subroutine MpiStat
+                  
+  subroutine MpiQuietWait
+  !Set MPI thread to sleep, e.g. so can run openmp on cpu instead
+#ifdef MPI  
+     integer flag, ierr, STATUS(MPI_STATUS_SIZE)
+     integer i, MpiId, MpiSize
+       
+     call MpiStat(MpiID, MpiSize)
+     if (MpiID/=0) then  
+      do
+       call MPI_IPROBE(0,0,MPI_COMM_WORLD,flag, MPI_STATUS_IGNORE,ierr)
+       if (flag/=0) then
+             call MPI_RECV(i,1,MPI_INTEGER, 0,0,MPI_COMM_WORLD,status,ierr)
+             exit
+       end if
+       call sleep(1)
+      end do
+     end if 
+#endif
+  end subroutine
+  
+  subroutine MpiWakeQuietWait
+#ifdef MPI  
+    integer j, MpiId, MpiSize, ierr,r
+       
+     call MpiStat(MpiID, MpiSize)
+     if (MpiID==0) then
+     do j=1, MpiSize-1              
+           call MPI_ISSEND(MpiId,1,MPI_INTEGER, j,0,MPI_COMM_WORLD,r,ierr)
+     end do  
+     end if
+#endif
+  end subroutine MpiWakeQuietWait
  
+#ifdef __GFORTRAN__
+  
+  ! ===========================================================
+  function iargc ()
+    ! ===========================================================
+    integer iargc
+    ! ===========================================================
+    
+    iargc=command_argument_count()
+  end function iargc
+  
+  ! ===========================================================
+  subroutine getarg(num, res)
+    ! ===========================================================
+    integer, intent(in) :: num
+    character(len=*), intent(out) :: res
+    integer l, err
+    ! ===========================================================
+    call get_command_argument(num,res,l,err)
+  end subroutine getarg
+  
+#endif
+
 
   function GetParam(i)
 
@@ -1004,9 +1111,9 @@
    end if
   end function GetParam
 
-  function concat_s(S1,S2,S3,S4,S5,S6) result(concat)
+  function concat_s(S1,S2,S3,S4,S5,S6,S7,S8) result(concat)
    character(LEN=*), intent(in) :: S1, S2
-   character(LEN=*), intent(in) , optional :: S3, S4, S5, S6
+   character(LEN=*), intent(in) , optional :: S3, S4, S5, S6,S7,S8
    character(LEN = 1000) concat
 
    concat = trim(S1) // S2
@@ -1018,6 +1125,12 @@
          concat = trim(concat) // S5
            if (present(S6)) then
              concat = trim(concat) // S6
+              if (present(S7)) then
+                concat = trim(concat) // S7
+                if (present(S8)) then
+                  concat = trim(concat) // S8
+                end if
+              end if    
            end if
        end if
      end if
@@ -1025,28 +1138,34 @@
 
   end function concat_s
 
- function concat_s_n_s_n_s_n_s_n(S1,N2,S3,N4,S5,N6,S7,N8,S9) result(concat)
-   character(LEN=*), intent(in) :: S1
+ function concat_s_n(SS1,N2,SS3,N4,SS5,N6,SS7,N8,SS9,N10,SS11) result(concat)
+   character(LEN=*), intent(in) :: SS1
    integer, intent(in) :: N2
-   character(LEN=*), intent(in) , optional :: S3, S5, S7, S9
-   integer, intent(in), optional ::N4,N6,N8
+   character(LEN=*), intent(in) , optional :: SS3, SS5, SS7, SS9,SS11
+   integer, intent(in), optional ::N4,N6,N8, N10
    character(LEN = 1000) concat
    
-   concat = trim(S1) //trim(IntToStr(N2))
-     if (present(S3)) then
-    concat = trim(concat) // S3
+   concat = trim(SS1) //trim(IntToStr(N2))
+     if (present(SS3)) then
+    concat = trim(concat) // SS3
      if (present(N4)) then
        concat = trim(concat) // trim(IntToStr(N4))
-       if (present(S5)) then
-         concat = trim(concat) // S5
+       if (present(SS5)) then
+         concat = trim(concat) // SS5
            if (present(N6)) then
              concat = trim(concat) // trim(intToStr(N6))
-             if (present(S7)) then
-             concat = trim(concat) // S7
+             if (present(SS7)) then
+             concat = trim(concat) // SS7
               if (present(N8)) then
                concat = trim(concat) // trim(intToStr(N8))
-              if (present(S9)) then
-               concat = trim(concat) // S9
+              if (present(SS9)) then
+               concat = trim(concat) // SS9
+                if (present(N10)) then
+                concat = trim(concat) // trim(intToStr(N10))
+                  if (present(SS11)) then
+                   concat = trim(concat) // SS11
+                  end if
+                end if
               end if       
            end if
        end if
@@ -1055,7 +1174,7 @@
    end if
    end if
    
- end  function concat_s_n_s_n_s_n_s_n
+ end  function concat_s_n
 
   subroutine Exchange(i1,i2)
    integer i1,i2,tmp
@@ -1116,13 +1235,24 @@
    
   end  function IntToLogical
  
-  function IntToStr(I)
+  function IntToStr(I, minlen)
    integer , intent(in) :: I
    character(LEN=30) IntToStr
+   integer, intent(in), optional :: minlen
+   integer n
+   character (LEN=20) :: form
 
-   write (IntToStr,*) i
-   IntToStr = adjustl(IntToStr)
+   if (present(minlen)) then
+    n = minlen
+    if (I<0) n=n+1
+    form = concat('(I',n,'.',minlen,')')
+    write (IntToStr,form) i
+   else
+    write (IntToStr,*) i
+    IntToStr = adjustl(IntToStr)
+   end if
 
+ 
   end function IntToStr
 
   function StrToInt(S)
@@ -1234,6 +1364,26 @@
 
   end function ExtractFilePath
 
+  function ExtractFileExt(aname)
+    character(LEN=*), intent(IN) :: aname
+    character(LEN=120) ExtractFileExt
+    integer len, i
+
+    len = len_trim(aname)
+    do i = len, 1, -1
+       if (aname(i:i)=='/') then
+          ExtractFileExt = ''
+          return
+       else if (aname(i:i)=='.') then
+          ExtractFileExt= aname(i:len)   
+          return
+       end if
+    end do
+    ExtractFileExt = ''
+
+  end function ExtractFileExt
+
+
  function ExtractFileName(aname)
     character(LEN=*), intent(IN) :: aname
     character(LEN=120) ExtractFileName
@@ -1273,7 +1423,15 @@
      integer len
      
      len = len_trim(aname)
+#ifdef IBMXL
+     if (aname(len:len) /= '\\' .and. aname(len:len) /= '/') then
+#else
+#ifdef ESCAPEBACKSLASH
+     if (aname(len:len) /= '\\' .and. aname(len:len) /= '/') then
+#else
      if (aname(len:len) /= '\' .and. aname(len:len) /= '/') then
+#endif
+#endif
       CheckTrailingSlash = trim(aname)//'/'
      else
       CheckTrailingSlash = aname
@@ -1327,7 +1485,7 @@
    integer, intent(in) :: aunit
 
 
-   open(unit=aunit,file=aname,form=mode,status='old', err=500)
+   open(unit=aunit,file=aname,form=mode,status='old', action='read', err=500)
    return
 
 500 call MpiStop('File not found: '//trim(aname))
@@ -1408,17 +1566,13 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
 
  end subroutine CreateOpenFile
 
- 
-
- function FileColumns(aunit) result(n)
-   integer, intent(in) :: aunit
-   integer n,i
-   logical isNum
+ function TxtNumberColumns(InLine) result(n)
    character(LEN=4096) :: InLine
-
+   integer n,i
+   logical isNum    
+   
    n=0
    isNum=.false.
-   read(aunit,'(a)', end = 10) InLine
    do i=1, len_trim(InLIne)
     if (verify(InLine(i:i),'-+eE.0123456789') == 0) then
       if (.not. IsNum) n=n+1
@@ -1427,7 +1581,35 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
       IsNum=.false.     
     end if
    end do
+   
+ end function TxtNumberColumns
+ 
+  function TxtColumns(InLine) result(n)
+   character(LEN=4096) :: InLine
+   integer n,i
+   logical isNum    
+   
+   n=0
+   isNum=.false.
+   do i=1, len_trim(InLine)
+    if (InLine(i:i) > char(32)) then
+      if (.not. IsNum) n=n+1
+      IsNum=.true.
+    else
+      IsNum=.false.     
+    end if
+   end do
+   
+ end function TxtColumns
 
+ function FileColumns(aunit) result(n)
+   integer, intent(in) :: aunit
+   integer n
+   character(LEN=4096) :: InLine
+
+   n=0
+   read(aunit,'(a)', end = 10) InLine
+   n = TxtNumberColumns(InLine)
 10 rewind aunit
   
  end function FileColumns
@@ -1449,6 +1631,26 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
 
  end function FileLines
 
+
+ function TopCommentLine(aname) result(res)
+    character(LEN=*), intent(IN) :: aname
+    integer n, file_id 
+    character(LEN=1024) :: InLine, res
+    
+    res = ''
+    file_id = new_file_unit()
+    call OpenTxtFile(aname, file_id)
+    InLine=''
+    do while (InLine /= '') 
+     read(file_id,'(a)', end = 10) InLine
+    end do
+    If (InLIne(1:1)=='#') then
+     res = InLine
+    end if
+
+10  call CloseFile(file_id)
+
+ end function TopCommentLine
 
 
  function TxtFileColumns(aname) result(n)
@@ -1564,6 +1766,23 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
       end subroutine spline_double
 
 
+      function DLGAMMA(x)
+       !Use Stirling generalization for large x
+       !See e.g. http://en.wikipedia.org/wiki/Stirling's_approximation
+       !Is accurate to at least 10 decimals, worse just about 30
+       double precision :: x
+       double precision:: DLGAMMA !approx log gamma
+       double precision, parameter :: const = .91893853320467274180d0 !log(2pi)/2
+   
+       if (x<32.d0) then
+        DLGAMMA = log(GAMMA(x))
+       else
+        DLGAMMA = (x-0.5d0)*log(x) - x + const +  &
+         1/12.d0/(1+x)*(1+1/(x+2)*(1+59.d0/30/(x+3)*(1+2.9491525423728813559d0/(x+4))))
+      end if
+      end function DLGAMMA
+
+
       function LogGamma(x)
         real LogGamma
         real, intent(in) :: x
@@ -1588,7 +1807,7 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
 
       end function LogGamma
 
-    REAL FUNCTION GAMMA(X)
+    DOUBLE PRECISION FUNCTION GAMMA(X)
 !----------------------------------------------------------------------
 !
 ! This routine calculates the GAMMA function for a real argument X.
@@ -1677,19 +1896,19 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
 !----------------------------------------------------------------------
       INTEGER I,N
       LOGICAL PARITY
-    REAL C,EPS,FACT,HALF,ONE,P,PI,Q,RES,SQRTPI,SUM,TWELVE, &
+    DOUBLE PRECISION C,EPS,FACT,HALF,ONE,P,PI,Q,RES,SQRTPI,SUM,TWELVE, &
          TWO,X,XBIG,XDEN,XINF,XMININ,XNUM,Y,Y1,YSQ,Z,ZERO
       DIMENSION C(7),P(8),Q(8)
 !----------------------------------------------------------------------
 !  Mathematical constants
 !----------------------------------------------------------------------
-    DATA ONE,HALF,TWELVE,TWO,ZERO/1.0E0,0.5E0,12.0E0,2.0E0,0.0E0/, &
-        SQRTPI/0.9189385332046727417803297E0/, &
-        PI/3.1415926535897932384626434E0/
+    DATA ONE,HALF,TWELVE,TWO,ZERO/1.0D0,0.5D0,12.0D0,2.0D0,0.0D0/, &
+        SQRTPI/0.9189385332046727417803297D0/, &
+        PI/3.1415926535897932384626434D0/
 !----------------------------------------------------------------------
 !  Machine dependent parameters
 !----------------------------------------------------------------------
-    DATA XBIG,XMININ,EPS/35.040E0,1.18E-38,1.19E-7/, &
+    DATA XBIG,XMININ,EPS/35.040D0,1.18D-38,1.19D-7/, &
         XINF/3.4E38/
 !----------------------------------------------------------------------
 !  Numerator and denominator coefficients for rational minimax
@@ -1706,10 +1925,10 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
 !----------------------------------------------------------------------
 ! Coefficients for minimax approximation over (12, INF).
 !----------------------------------------------------------------------
-    DATA C/-1.910444077728E-03,8.4171387781295E-04, &
-        -5.952379913043012E-04,7.93650793500350248E-04, &
-        -2.777777777777681622553E-03,8.333333333333333331554247E-02, &
-         5.7083835261E-03/
+    DATA C/-1.910444077728D-03,8.4171387781295D-04, &
+        -5.952379913043012D-04,7.93650793500350248D-04, &
+        -2.777777777777681622553D-03,8.333333333333333331554247D-02, &
+         5.7083835261D-03/
 !----------------------------------------------------------------------
 !  Statement functions for conversion between integer and float
 !----------------------------------------------------------------------
@@ -2107,7 +2326,11 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
       return 
 #else
    call MpiStop('must compile with -DTHREEJ to use 3j routine')
+
+!Just prevent unused variable warnings:
+   thrcof(1)=l2in+l3in+m2in+m3in
 #endif
+
 
     end subroutine GetThreeJs
 
@@ -2116,6 +2339,7 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
   end module AMLutils
  
   
+#ifdef ZIGGURAT
 MODULE Ziggurat
 ! Marsaglia & Tsang generator for random normals & random exponentials.
 ! Translated from C by Alan Miller (amiller@bigpond.net.au)
@@ -2302,6 +2526,7 @@ FUNCTION rexp( ) RESULT( fn_val )
 END FUNCTION rexp
 
 END MODULE ziggurat
+#endif 
 
   
 
@@ -2315,7 +2540,9 @@ contains
    
   subroutine initRandom(i)
   use AMLUtils
+#ifdef ZIGGURAT
   use Ziggurat
+#endif
   implicit none
   integer, optional, intent(IN) :: i
   integer seed_in,kl,ij
@@ -2340,8 +2567,9 @@ contains
 
       if (Feedback > 0 ) write(*,'(" Random seeds:",1I6,",",1I6," rand_inst:",1I4)') ij,kl,rand_inst
       call rmarin(ij,kl)
-      
+#ifdef ZIGGURAT
       if (use_ziggurat) call zigset(ij)
+#endif
   end subroutine initRandom
 
   subroutine RandIndices(indices, nmax, n)
@@ -2387,15 +2615,18 @@ contains
 
 
   double precision function GAUSSIAN1()
+#ifdef ZIGGURAT
     use Ziggurat
+#endif
     implicit none
     double precision R, V1, V2, FAC
     integer, save :: iset = 0
     double precision, save :: gset
 
     if (use_ziggurat) then
-    
+#ifdef ZIGGURAT
      Gaussian1 = rnor( )
+#endif
     else
      !Box muller
      if (ISET==0) then
@@ -2614,3 +2845,4 @@ contains
 end module Random
 
 
+ 

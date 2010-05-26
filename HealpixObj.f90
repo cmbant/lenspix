@@ -45,7 +45,7 @@ module HealpixObj
  end type HealpixAlm
 
  type HealpixPower
-   !Raw Cls in milliK^2 units
+   !Raw Cls
    !read from text files in l(l+1)C_l/(2pi microK^2)
    !PhiCl is lensing potential phi-phi and phi-T. 
    !Phi is read in above units, but stored here as dimensionless
@@ -118,6 +118,16 @@ contains
 
    end subroutine HealpixPower_Free
 
+   subroutine HealpixPower_Assign(P, Pin)
+    Type(HealpixPower) P, Pin
+
+    call HealpixPower_Init(P, Pin%lmax, Pin%pol, Pin%lens)
+    P%Cl = Pin%Cl
+    if (Pin%lens) P%PhiCl = Pin%PhiCl  
+
+   end subroutine HealpixPower_Assign
+
+   
 
    subroutine HealpixPower_ReadFromTextFile(P, f, lmax, pol, dolens)
      use AMLutils
@@ -131,6 +141,7 @@ contains
      integer, parameter :: io_unit= 1
      character(LEN=200) :: InLine
      real(sp) test(8)
+     real(sp), parameter :: COBE_CMBTemp = 2.726
 
      open(unit=io_unit,file=f,form='formatted',status='old')
 
@@ -156,8 +167,8 @@ contains
       end do 
       
       tensors = colnum==5 .or. colnum==7
-      if (P%lens .and. colnum /= 6 .and. colnum/=7) stop 'can''t indentify text phi cl columns'
-      if (pol2 .and. colnum<3) stop 'No polarization in C_l file'  
+      if (P%lens .and. colnum /= 6 .and. colnum/=7) call MpiStop('can''t indentify text phi cl columns')
+      if (pol2 .and. colnum<3) call mpiStop('No polarization in C_l file' ) 
       rewind io_unit
 
       B=0
@@ -195,8 +206,8 @@ contains
          P%Cl(l,4) = TE*scal
          end if
          if (P%Lens .and. l>=1) then
-             P%PhiCl(l,1) = phi/real(l,dp)**4/1e12/2.726**2
-             P%PhiCl(l,2) = phiT/real(l,dp)**3/1e6/2.726/mK
+             P%PhiCl(l,1) = phi/real(l,dp)**4/1e12/COBE_CMBTemp**2
+             P%PhiCl(l,2) = phiT/real(l,dp)**3/1e6/COBE_CMBTemp/mK
          end if
        end if
        enddo
@@ -238,7 +249,7 @@ contains
       
 
      if (all(shape(P%Cl) /= shape(Ptotal%Cl))) &
-         stop 'HealpixPower_AddPower: must have same sized power spectra' 
+         call MpiStop('HealpixPower_AddPower: must have same sized power spectra') 
      Ptotal%Cl = Ptotal%Cl + P%Cl
      if (AddPhi) then
        if (.not. PTotal%lens  .or. .not. P%lens) call MpiStop('HealpixPower_AddPower: must both have phi')
@@ -268,6 +279,50 @@ contains
    end do
 
   end subroutine HealpixPower_Smooth
+
+  subroutine HealpixPower_Smooth_Beam(P,beam, sgn)
+   Type(Healpixpower) :: P
+   integer l, sn
+   integer, intent(in), optional :: sgn
+   real(dp), intent(in) :: beam(0:)
+
+   if (present(sgn)) then
+    sn = sgn
+   else
+    sn = -1
+   end if
+   
+   do l=0,P%lmax
+     if (sn==-1) then
+      P%Cl(l,:) =  P%Cl(l,:)* beam(l)**2
+     else
+      P%Cl(l,:) =  P%Cl(l,:)/ beam(l)**2
+     end if
+   end do
+
+  end subroutine HealpixPower_Smooth_Beam
+
+  subroutine HealpixPower_Smooth_Beam2(P,beam1,beam2, sgn)
+   Type(Healpixpower) :: P
+   integer l, sn
+   integer, intent(in), optional :: sgn
+   real(dp), intent(in) :: beam1(0:), beam2(0:)
+
+   if (present(sgn)) then
+    sn = sgn
+   else
+    sn = -1
+   end if
+   
+   do l=0,P%lmax
+     if (sn==-1) then
+      P%Cl(l,:) =  P%Cl(l,:)* beam1(l)*beam2(l)
+     else
+      P%Cl(l,:) =  P%Cl(l,:)/ ( beam1(l)*beam2(l))
+     end if
+   end do
+
+  end subroutine HealpixPower_Smooth_Beam2
 
 
 
@@ -303,8 +358,8 @@ contains
     Type(HealpixAlm) :: A, A2
     integer l,i,ix
 
-    if (A%lmax /= A2%lmax) stop 'HealpixAlm2CrossPower: mismatched lmax'
-    if (A%npol /= A2%npol) stop 'HealpixAlm2CrossPower: different pol content'
+    if (A%lmax /= A2%lmax) call MpiStop('HealpixAlm2CrossPower: mismatched lmax')
+    if (A%npol /= A2%npol) call MpiStop('HealpixAlm2CrossPower: different pol content')
     call HealpixPower_Init(P,A%lmax,A%npol==3)
     
     P%Cl(0:1,:) = 0
@@ -346,15 +401,15 @@ contains
 
      if (A%npol /= 0) then 
       ALLOCATE(A%TEB(1:A%npol, 0:almax, 0:almax),stat = status)
-      if (status /= 0) stop 'No Mem: HealpixAlm_Init'
+      if (status /= 0) call MpiStop('No Mem: HealpixAlm_Init lmax = '//IntToStr(almax))
       A%TEB=0
      end if
 
      if (present(spinmap)) then
          if (spinmap /= nospinmap) then
-          if (spinmap<1 .or. spinmap > 3) stop 'Spin must be 0<spin<4'
+          if (spinmap<1 .or. spinmap > 3) call mpiStop( 'Spin must be 0<spin<4')
           ALLOCATE(A%SpinEB(2, 0:almax, 0:almax),stat = status)
-          if (status /= 0) stop 'No Mem: HealpixAlm_Init'
+          if (status /= 0) call MpiStop('No Mem: HealpixAlm_Init spinmap')
          end if
          A%spin= spinmap     
      else
@@ -370,7 +425,7 @@ contains
      if (A%HasPhi) then
           ALLOCATE(A%Phi(1:1,0:almax, 0:almax),stat = status)
           A%Phi = 0
-          if (status /= 0) stop 'No Mem: HealpixAlm_Init'
+          if (status /= 0) call MpiStop('No Mem: HealpixAlm_Init phi')
      end if
 
    end subroutine HealpixAlm_Init
@@ -385,17 +440,17 @@ contains
    nullify(AOut%TEB, AOut%SpinEB, AOut%Phi)
    if (Ain%npol>0) then
       ALLOCATE(AOut%TEB(1:AOut%npol, 0:AOut%lmax, 0:AOut%lmax),stat = status)
-      if (status /= 0) stop 'No Mem: HealpixAlm_Assign'
+      if (status /= 0) call MpiStop('No Mem: HealpixAlm_Assign')
      AOut%TEB= Ain%TEB
    end if
    if (AIn%spin /= nospinmap) then
         ALLOCATE(AOut%SpinEB(2, 0:AOut%lmax, 0:AOut%lmax),stat = status)
-        if (status /= 0) stop 'No Mem: HealpixAlm_Assign'
+        if (status /= 0) call MpiStop('No Mem: HealpixAlm_Assign')
         AOut%SpinEB = Ain%SpinEB
    end if
    if (AIn%HasPhi) then
        ALLOCATE(AOut%Phi(1:1,0:AOut%lmax, 0:AOut%lmax),stat = status)
-      if (status /= 0) stop 'No Mem: HealpixAlm_Assign'
+      if (status /= 0) call MpiStop('No Mem: HealpixAlm_Assign')
       AOut%Phi = Ain%Phi   
    end if 
   
@@ -439,7 +494,7 @@ contains
    if (field(1:1) /= 'S') then
     spin = 1
    else
-    if (.not. present(updown))  stop 'HealpixAlm_GradientOf: Must say which derivative'
+    if (.not. present(updown))  call MpiStop('HealpixAlm_GradientOf: Must say which derivative')
     Div = updown(1:1) == 'D'
 
     if (Div) then
@@ -469,7 +524,7 @@ contains
          B%SpinEB(:,l,0:l) =  -sqrt(real((l+3)*(l-2),dp))*A%TEB(2:3,l,0:l)
          end if
       else
-       stop 'HealpixAlm_GradientOf: Unknown field'
+       call MpiStop('HealpixAlm_GradientOf: Unknown field')
       end if 
     end do
 
@@ -492,7 +547,7 @@ contains
    if (A%npol==0) then
       A%npol = 3
       ALLOCATE(A%TEB(1:A%npol, 0:A%lmax, 0:A%lmax),stat = status)
-      if (status /= 0) stop 'No Mem: HealpixAlm_Spin2ToPol'
+      if (status /= 0) call MpiStop('No Mem: HealpixAlm_Spin2ToPol')
       A%TEB=0
    end if
    A%TEB(2:3,:,:) = A%SpinEB(1:2,:,:)
@@ -520,6 +575,29 @@ contains
    end do
 
   end subroutine HealpixAlm_Smooth
+
+  subroutine HealpixAlm_Smooth_Beam(A,Beam, sgn)
+   Type(HealpixAlm) :: A
+   integer l, sn
+   real(dp) :: beam(0:)
+   integer, intent(in), optional :: sgn
+   
+   if (present(sgn)) then
+     sn = sgn
+   else
+     sn = -1
+   end if
+
+   do l=0,A%lmax
+     if (sn ==-1) then
+      A%TEB(:,l,:) =  A%TEB(:,l,:)*beam(l)
+     else
+      A%TEB(:,l,:) =  A%TEB(:,l,:)/beam(l)
+     end if
+   end do
+
+  end subroutine HealpixAlm_Smooth_Beam
+
 
   subroutine HealpixMap_GetAzimCut(M, npix,rad, theta,phi)
    !1 inside disc radius rad centred at theta, phi (radians)
@@ -619,7 +697,7 @@ contains
     real(dp), intent(in) :: theta, phi, chi 
     real(dp), intent(inout) :: R(3,3)
   
-    stop 'Healpix_GetRotation: You''ll have to check this routine'
+    call MpiStop('Healpix_GetRotation: You''ll have to check this routine')
 
     R(1,1) = cos(phi)*cos(theta)*cos(chi) - sin(phi)*sin(chi)
     R(1,2) = sin(phi)*cos(theta)*cos(chi) + cos(phi)*sin(chi)
@@ -642,7 +720,7 @@ contains
     integer i, ix
     real(dp) vec(3), R(3,3)
 
-    stop 'Don''t use this'
+    call MpiStop('Don''t use this')
     call Healpix_GetRotation(R, theta, phi, chi)
     call HealpixMap_Init(MR, M%npix, M%nmaps)
     call HealpixMap_ForceRing(M)
@@ -655,9 +733,41 @@ contains
 
   end subroutine HealpixMap_Rotate
 
+
+  function HealpixMap_EclipticPixel(M, theta,phi) result (res)
+   !Pixel on galactic map for point at given ecliptic coordinates
+    use pix_tools
+    use coord_v_convert
+    Type(HealpixMap) :: M
+    real(dp), intent(in) :: theta, phi
+    integer res
+    real(dp) vec(3), vecout(3)
+    
+    call ang2vec(theta,phi,vec)
+    call xcc_DP_E_TO_G(vec,2000.d0,vecout)
+    res = HealpixMap_Vec2pix(M, vecout) 
+    
+  end function HealpixMap_EclipticPixel
+
+
+  subroutine HealpixMap_MarkEclipticPlane(M, val)
+   !Mark pixels on ecliptic plan by value val, assuming M galactic
+    Type(HealpixMap) :: M
+    real(dp) :: val, theta, phi, delta
+    integer i
+    
+    theta = HO_pi/2
+    delta = 2*HO_pi/ (M%nside*8) 
+    do i=1, M%nside*8
+     phi = i*delta
+     M%TQU(HealpixMap_EclipticPixel(M,theta,phi),:) = val
+    end do
+    
+  end subroutine HealpixMap_MarkEclipticPlane
+
  
   subroutine HealpixMap_AddWhiteNoise(M, N_T, N_QU )
-  !N_T and N_QU are the N_l of the noise (in mK)
+  !N_T and N_QU are the N_l of the noise
     use Random
     Type(HealpixMap) :: M
     real(sp), intent(in) :: N_T
@@ -671,7 +781,7 @@ contains
     end do
   
     if (present(N_QU) .and. M%nmaps>1) then
-        if (M%nmaps /= 3) stop 'HealpixMap_AddWhiteNoise: No polarization in map'
+        if (M%nmaps /= 3) call MpiStop('HealpixMap_AddWhiteNoise: No polarization in map')
         amp = sqrt(N_QU*M%npix/HO_fourpi)
         do i=0, M%npix-1
          M%TQU(i,2)= M%TQU(i,2) + Gaussian1()*amp
@@ -687,19 +797,23 @@ contains
     use Random
     Type(HealpixMap) :: M, NoiseMap
     integer i
+    real var
          
     do i=0, M%npix-1
-     M%TQU(i,1)= M%TQU(i,1) + Gaussian1()*sqrt(NoiseMap%TQU(i,1))
+     var= NoiseMap%TQU(i,1)
+     if (var>0) M%TQU(i,1)= M%TQU(i,1) + Gaussian1()*sqrt(var)
     end do
   
     if (M%nmaps>1) then
         if (M%nmaps /= 3) call MpiStop('HealpixMap_AddUncorrelatedNoise: No polarization in map')
         if (NoiseMap%nmaps /= 3) call MpiStop('HealpixMap_AddUncorrelatedNoise: No polarization in noise map')
         do i=0, M%npix-1
-         M%TQU(i,2)= M%TQU(i,2) + Gaussian1()*sqrt(NoiseMap%TQU(i,2))
+         var= NoiseMap%TQU(i,2)
+         if (var > 0) M%TQU(i,2)= M%TQU(i,2) + Gaussian1()*sqrt(var)
         end do
         do i=0, M%npix-1
-         M%TQU(i,3)= M%TQU(i,3) + Gaussian1()*sqrt(NoiseMap%TQU(i,3))
+         var= NoiseMap%TQU(i,3)
+         if (var>0) M%TQU(i,3)= M%TQU(i,3) + Gaussian1()*sqrt(var)
         end do
     end if
     
@@ -735,7 +849,7 @@ contains
 
    if (present(HasPhi)) then
      wantphi= HasPhi
-     if (wantphi .and. .not. associated(P%PhiCl)) stop 'HealpixAlm_Sim: PhiCl not present'
+     if (wantphi .and. .not. associated(P%PhiCl)) call MpiStop('HealpixAlm_Sim: PhiCl not present')
    else
      wantphi = .false.
    end if
@@ -783,7 +897,7 @@ contains
    if (wantphi) then
      !Make phi with correct correlation to T, assume E-phi correlation is zero
      !AL: Oct 07: fixed so we don't introduce spurious E-phi correlation
-     !Pointed out by Perotto, arXiv:astro-ph/0606227 
+     !Pointed out by Perotto, arXiv:astro-ph/0606227 (journal version)
      do l=2, P%lmax
       if (P%Cl(l,1)==0) then
         tamp = 1.0
@@ -830,7 +944,7 @@ contains
      RandInited = .true.
    end if
    call HealpixAlm_Init(A,P%lmax, 0,HasPhi = .true.)
-   if (.not. P%lens) stop 'must have phi power spectrum'
+   if (.not. P%lens) call MpiStop('must have phi power spectrum')
 
    A%Phi(:,0:1,:)=0 !So what about the dipole??
    do l=2, P%lmax
@@ -899,7 +1013,7 @@ contains
       M%spin = nospinmap
      end if
      if (M%spin /= nospinmap) then
-       if (M%spin<1 .or. M%spin > 3) stop 'Spin must be 0<spin<4'
+       if (M%spin<1 .or. M%spin > 3) call MpiStop('Spin must be 0<spin<4')
        ALLOCATE(M%SpinField(0:M%npix-1),stat = status)
        M%spin = spinmap
      end if
@@ -914,7 +1028,7 @@ contains
     integer status
  
       ALLOCATE(M%Phi(0:M%npix-1),stat = status)
-      if (status /=0) stop 'HealpixMap_AllocatePhi: allocate'
+      if (status /=0) call MpiStop('HealpixMap_AllocatePhi: allocate')
       M%HasPhi = .true.
 
   end  subroutine HealpixMap_AllocatePhi
@@ -927,7 +1041,7 @@ contains
       M%nmaps = nmaps
       deallocate(M%TQU, stat=status)
       ALLOCATE(M%TQU(0:M%npix-1,M%nmaps),stat = status)
-      if (status /= 0) stop 'HealpixMap_AllocateTQU: allocate'
+      if (status /= 0) call MpiStop('HealpixMap_AllocateTQU: allocate')
       M%TQU= 0
  
   end  subroutine HealpixMap_AllocateTQU
@@ -966,45 +1080,52 @@ contains
    nullify(MOut%TQU)
    if (Min%nmaps>0) then
      allocate(MOut%TQU(0:Min%npix-1,Min%nmaps),stat = status)
-     if (status /= 0) stop 'No Mem: HealpixMap_Assign'
+     if (status /= 0) call MpiStop('No Mem: HealpixMap_Assign')
      MOut%TQU = Min%TQU
    end if
    nullify(MOut%SpinField,MOut%phi)
    if (MIn%spin /= nospinmap) then
      allocate(MOut%SpinField(0:Min%npix-1),stat = status)
-     if (status /= 0) stop 'No Mem: HealpixMap_Assign'
+     if (status /= 0) call MpiStop('No Mem: HealpixMap_Assign')
      MOut%SpinField = Min%SpinField
      !MOut%SpinQ => MOut%SpinField(:,1)
      !MOut%SpinU => MOut%SpinField(:,2) 
    end if
    if (MIn%HasPhi) then
      allocate(MOut%Phi(0:Min%npix-1),stat = status)
-     if (status /= 0) stop 'No Mem: HealpixMap_Assign'
+     if (status /= 0) call MpiStop('No Mem: HealpixMap_Assign')
      MOut%Phi = Min%Phi   
    end if 
 
   end subroutine HealpixMap_Assign
 
 
-  subroutine HealpixMap_Read(OutMAP,fname)
+  subroutine HealpixMap_Read(OutMAP,fname, map_limit)
    CHARACTER(LEN=80), DIMENSION(1:120) :: header_in
    character(LEN=*), intent(in) :: fname
+   integer, optional :: map_limit
+   integer nmaps
    
    Type(HealpixMap) OutMap 
 
    call HealpixMap_Free(OutMap)
     
+   if (.not. FileExists(fname)) call MpiStop('HealpixMap_Read: File not found - '//trim(fname)) 
    OutMap%npix = getsize_fits(fname, nmaps=OutMap%nmaps, ordering=OutMap%ordering, nside=OutMap%nside,&
         type=OutMap%type)
+   nmaps = outMap%nmaps
+   if (present(map_limit)) then
+   nmaps = min(nmaps, map_limit)
+   end if
    if ((OutMap%ordering /=  ord_ring).and.(OutMap%ordering /= ord_nest)) then
      PRINT*,'The ordering scheme of the map must be RING or NESTED.'
      PRINT*,'No ordering specification is given in the FITS-header!'
-     stop 1
+     call MpiStop('')
     endif
   if (OutMap%nside /= npix2nside(OutMap%npix)) then ! accept only full sky map
      print*,'FITS header keyword NSIDE = ',OutMap%nside,' does not correspond'
      print*,'to the size of the map!'
-     stop 1
+     call MpiStop('')
    endif
 
    call HealpixMap_AllocateTQU(OutMap,OutMap%nmaps) 
@@ -1022,11 +1143,18 @@ contains
 
   end subroutine HealpixMap_Read
 
-  subroutine HealpixMap_Write(M, fname)
+  subroutine HealpixMap_Write(M, fname, overwrite)
     Type(HealpixMap), intent(in) :: M
     character(LEN=*), intent(in) :: fname
+    logical, intent(in), optional :: overwrite
     CHARACTER(LEN=80), DIMENSION(1:120) :: header
     integer nlheader
+
+    if (present(overwrite)) then
+     if (overwrite) call DeleteFile(fname)
+    else
+     if (FileExists(fname)) call MpiStop('HealpixMap_Write: file already exists - '//trim(fname))
+    end if
 
     header = ' '
     call add_card(header,'COMMENT','-----------------------------------------------')
@@ -1052,22 +1180,69 @@ contains
     endif
     call add_card(header) ! blank line
     call add_card(header,"TTYPE1", "TEMPERATURE","Temperature map")
-    call add_card(header,"TUNIT1", "mK", "map unit")
+    call add_card(header,"TUNIT1", "muK", "map unit")
     call add_card(header)
     if (M%nmaps == 3) then
        call add_card(header,"TTYPE2", "Q-POLARISATION","Q Polarisation map")
-       call add_card(header,"TUNIT2", "mK", "map unit")
+       call add_card(header,"TUNIT2", "muK", "map unit")
        call add_card(header)
        call add_card(header,"TTYPE3", "U-POLARISATION","U Polarisation map")
-       call add_card(header,"TUNIT3", "mK", "map unit")
+       call add_card(header,"TUNIT3", "muK", "map unit")
        call add_card(header)
     endif
     call add_card(header,"COMMENT","*************************************")
 
    nlheader = SIZE(header)
-    call write_bintab(M%TQU, M%npix, M%nmaps, header, nlheader, fname)
+  
+   call write_bintab(M%TQU, M%npix, M%nmaps, header, nlheader, fname)
 
   end  subroutine HealpixMap_Write
+
+  subroutine HealpixAlm_Write(A, fname)
+    !Thanks to Sam Leach
+    Type(HealpixAlm), intent(in) :: A
+    character(LEN=*), intent(in) :: fname
+    CHARACTER(LEN=80), DIMENSION(1:120) :: header
+    integer nlheader,ii
+
+    do ii=1,A%npol
+       header = ' '
+       call add_card(header,'COMMENT','-----------------------------------------------')
+       call add_card(header,'COMMENT','     Sky Map Pixelisation Specific Keywords    ')
+       call add_card(header,'COMMENT','-----------------------------------------------')
+       if (ii == 1) then
+          call add_card(header,"EXTNAME","""ANALYSED a_lms (TEMPERATURE)""")
+       elseif (ii == 2) then
+          call add_card(header,"EXTNAME","'ANALYSED a_lms (ELECTRIC component)'")
+       elseif (ii == 3) then
+          call add_card(header,"EXTNAME","'ANALYSED a_lms (CURL / MAGNETIC component)'")
+       endif
+       call add_card(header) ! blank line
+       call add_card(header,'CREATOR','HEALPixObj',        'Software creating the FITS file')
+       if (A%npol == 3) then
+          call add_card(header,'POLAR',.true.," Polarisation included (True/False)")
+       else
+          call add_card(header,'POLAR',.false.," Polarisation included (True/False)")
+       endif
+       call add_card(header) ! blank line
+       call add_card(header,"TTYPE1", "INDEX"," i = l^2 + l + m + 1")
+       call add_card(header,"TUNIT1", "   "," index")
+       call add_card(header)
+       call add_card(header,"TTYPE2", "REAL"," REAL a_lm")
+       call add_card(header,"TUNIT2", "muK"," alm units")
+       call add_card(header)
+        !
+       call add_card(header,"TTYPE3", "IMAG"," IMAGINARY a_lm")
+       call add_card(header,"TUNIT3", "muK"," alm units")
+       call add_card(header)
+       call add_card(header,"COMMENT","*************************************")
+       
+       nlheader = SIZE(header)
+       call dump_alms(fname,A%TEB(ii,0:A%lmax,0:A%lmax),A%lmax,header,nlheader,ii-1)
+
+    end do
+  end  subroutine HealpixAlm_Write
+
 
 
   subroutine HealpixMap_Free(M)
@@ -1100,11 +1275,12 @@ contains
    integer i
 
    if (M%ordering /= ord_ring) then
-    do i=1, M%nmaps
-      call convert_nest2ring (M%nside, M%TQU(:,i))
-     end do
+      call convert_nest2ring (M%nside, M%TQU)
+    ! do i=1, M%nmaps
+    !  call convert_nest2ring (M%nside, M%TQU(:,i))
+    ! end do
      if (M%spin/= nospinmap) then
-       stop 'ring not done for pol'
+       call MpiStop('ring not done for pol')
 !       call convert_nest2ring (M%nside, M%SpinField(:,1))
 !       call convert_nest2ring (M%nside, M%SpinField(:,2))
       end if
@@ -1123,11 +1299,12 @@ contains
    integer i
 
    if (M%ordering /= ord_nest) then
-     do i=1, M%nmaps
-      call convert_ring2nest (M%nside, M%TQU(:,i))
-     end do
+     call convert_ring2nest (M%nside, M%TQU)
+    ! do i=1, M%nmaps
+    !  call convert_ring2nest (M%nside, M%TQU(:,i))
+    ! end do
      if (M%spin/= nospinmap) then
-      stop 'nest not done for pol'
+      call MpiStop('nest not done for pol')
        !call convert_ring2nest (M%nside, M%SpinField(:,1))
        !call convert_ring2nest (M%nside, M%SpinField(:,2))
       end if
@@ -1230,7 +1407,7 @@ contains
       if (present(map_ix)) ix = map_ix
       call map2scalalm(H, almax, M%TQU(:,ix), A%TEB,cos_theta_cut)
      else if (npol ==3 .and. M%nmaps>0) then
-      if (present(map_ix)) stop ' cannot have polarization and multiple map indices'
+      if (present(map_ix)) call MpiStop(' cannot have polarization and multiple map indices')
       call map2polalm(H, almax, M%TQU, A%TEB,cos_theta_cut)
      end if  
 
@@ -1245,39 +1422,58 @@ contains
  
    end subroutine HealpixMap2alm
 
+   subroutine HealpixMapArray_Free(M)
+     Type(HealpixMap) :: M(:)
+     integer i
+     
+     do i=1, size(M) 
+      call HealpixMap_Free(M(i))
+     end do
+     
+   end subroutine HealpixMapArray_Free
 
-
-   subroutine HealpixMapSet2CrossPowers(H, M, Pows, nmap, almax)
-
+   subroutine HealpixMapSet2CrossPowers(H, M, Pows, nmap, almax, free)
+     integer, intent(in) :: nmap
      Type (HealpixInfo) :: H
      Type(HealpixMap), intent(in) :: M(nmap)
      Type(HealpixCrossPowers) :: Pows
-     integer, intent(in) :: nmap
      integer, intent(in) :: almax
      integer i
+     logical, intent(in), optional :: free
+     logical dofree
      Type(HealpixMapArray) :: maps(nmap)
 
 !Does not deallocate pows, assumed undefined
 
      if (nmap<0)  call MpiStop('HealpixMapSet2CrossPowers: must have one or more maps')
-
+     if (present(free)) then
+      dofree =.true.
+     else
+      dofree=.false.
+     end if
      do i=1,nmap
       call HealpixMap_ForceRing(M(i))
      end do
      
      Pows%nmaps = nmap
      Pows%lmax = almax
-     
      Pows%npol = M(1)%nmaps
      if (Pows%npol /=1 .and. Pows%npol /=3) call MpiStop('HealpixMapSet2CrossPowers: must be scalar or pol')
 
      do i=1,nmap
+        if(dofree) then
+         allocate(maps(i)%M(size(M(i)%TQU,1),size(M(i)%TQU,2)))
+         maps(i)%M = M(i)%TQU
+         call HealpixMap_Free(M(i))
+        else
         maps(i)%M => M(i)%TQU
+        end if
      end do
+
      if (Pows%npol==1) then
-      call maparray2scalcrosspowers(H, almax, maps, Pows,  nmap)
+      call maparray2scalcrosspowers(H, almax, maps, Pows,  nmap, dofree)
      else
-      call maparray2crosspowers(H, almax, maps, Pows,  nmap)
+      call maparray2crosspowers(H, almax, maps, Pows,  nmap, dofree)
      end if  
  
    end subroutine HealpixMapSet2CrossPowers
@@ -1297,6 +1493,24 @@ contains
       
   end subroutine HealpixMap_Smooth  
 
+  subroutine HealpixMap_SimulateUnlensed(H, M, P, Beam, want_pol)
+       Type(HealpixInfo) :: H
+       Type(HealpixMap) :: M
+       Type(HealpixPower) :: P, BeamP
+       real(dp), intent(in) :: Beam(0:)
+       logical, intent(in) :: want_pol
+       Type(HealpixAlm) :: A
+       
+       call HealpixPower_Assign(BeamP,P)
+       call HealpixPower_Smooth_Beam(BeamP, Beam,-1)
+       call HealpixAlm_Sim(A, BeamP, HasPhi=.false., dopol = want_pol)
+       call HealpixAlm2Map(H, A, M, nside2npix(H%nside))
+       call HealpixAlm_Free(A)
+       call HealpixPower_Free(BeamP)
+      
+  end subroutine HealpixMap_SimulateUnlensed
+
+
   subroutine HealpixAlm2GradientMap(H, A, M, npix, What)
      Type (HealpixInfo) :: H
      Type(HealpixMap) :: M
@@ -1307,7 +1521,7 @@ contains
    
     call HealpixMap_Init(M,npix,nmaps = 0, spinmap = 1)
     if (What(1:1) == 'P') then
-     if (.not. A%HasPhi) stop 'HealpixAlm2GradientMap: No phi field'
+     if (.not. A%HasPhi) call MpiStop('HealpixAlm2GradientMap: No phi field')
      call alm2GradientMap(H, A%lmax, A%Phi,M%SpinField)
     else if (What(1:1) == 'T') then
      call HealpixAlm_Init(AT, A%lmax,npol = 0, HasPhi = .true.)
@@ -1315,7 +1529,7 @@ contains
      call alm2GradientMap(H,A%lmax, AT%Phi,M%SpinField)
      call HealpixAlm_Free(AT)
     else
-     stop 'HealpixAlm2GradientMap: unknown field'
+     call MpiStop('HealpixAlm2GradientMap: unknown field')
     end if
   end subroutine HealpixAlm2GradientMap
 
@@ -1338,7 +1552,7 @@ contains
      Type(HealpixAlm), intent(in) :: A
       
      call HealpixMap_Init(M,GradPhi%npix,nmaps = A%npol)
-     if (GradPhi%spin /=1) stop 'HealpixExactLensedMap: GradPhi must be spin 1 field'
+     if (GradPhi%spin /=1) call MpiStop('HealpixExactLensedMap: GradPhi must be spin 1 field')
      if (A%npol ==1) then
       call scalalm2LensedMap(H, A%lmax, A%TEB, GradPhi%SpinField, M%TQU(:,1))
      else
@@ -1376,9 +1590,9 @@ contains
      integer, intent(in) :: interp_method
       
      call HealpixMap_Init(M,GradPhi%npix,nmaps = A%npol)
-     if (GradPhi%spin /=1) stop 'HealpixExactLensedMap: GradPhi must be spin 1 field'
+     if (GradPhi%spin /=1) call MpiStop('HealpixExactLensedMap: GradPhi must be spin 1 field')
      if (interp_method==interp_basic) then
-       if ( abs(factor - nint(factor)) > 1e-4) stop 'interp_factor must be 2^n for interp_basic'
+       if ( abs(factor - nint(factor)) > 1e-4) call MpiStop('interp_factor must be 2^n for interp_basic')
      end if
      if (A%npol ==1) then
       if (interp_method==interp_basic) then
@@ -1417,11 +1631,11 @@ contains
      Type(HealpixAlm), intent(in) :: A
       
      call HealpixMap_Init(M,GradPhi%npix,nmaps = A%npol)
-     if (GradPhi%spin /=1) stop 'HealpixExactLensedMap: GradPhi must be spin 1 field'
+     if (GradPhi%spin /=1) call MpiStop('HealpixExactLensedMap: GradPhi must be spin 1 field')
      if (A%npol ==1) then
       call alm2LensedQuadContrib(H, A%lmax, A%TEB, GradPhi%SpinField, M%TQU(:,1))
      else
-     stop 'not done yet'
+     call MpiStop('not done yet')
      end if
   end subroutine  HealpixQuadLensedMap_GradPhi
    
@@ -1514,6 +1728,25 @@ contains
     
  end subroutine HealpixMap_SetToIndexOnly
  
+  subroutine HealpixMap_SetToDataOnly(M, want_pol)
+    Type(HealpixMap) :: M
+    REAL(SP), DIMENSION(:,:), allocatable :: TQU
+    logical, intent(in) :: want_pol
+    
+    if (.not. want_pol) then
+     call HealpixMap_SetToIndexOnly(M,1)
+    else 
+    if (M%nmaps <3) call MpiStop('HealpixMap_SetToDataOnly: not enough maps')
+    M%nmaps =3
+    allocate(TQU(0:M%npix-1,3))
+    TQU(:,1:3) = M%TQU(:,1:3)
+    call HealpixMap_AllocateTQU(M,3) 
+    M%TQU = TQU
+    deallocate(TQU)
+    end if
+    
+ end subroutine HealpixMap_SetToDataOnly
+ 
   subroutine HealpixMap_AddPol(M)
     Type(HealpixMap) :: M
     REAL(SP), DIMENSION(:), allocatable :: T
@@ -1534,7 +1767,7 @@ contains
      integer, intent(in) :: nside_out
      logical, intent(in), optional :: pessimistic
      integer i
-     logical pess
+     logical isring, pess
      
 
     if (present(pessimistic)) then 
@@ -1545,11 +1778,13 @@ contains
     if (nside_out== M%nside) then
      call HealpixMap_Assign(Mout, M)
     else
+    isring = M%ordering == ord_ring
     call HealpixMap_ForceNest(M)
     call HealpixMap_Init(Mout,nside2npix(nside_out), M%nmaps, nested=.true.)
      do i=1, M%nmaps
        call sub_udgrade_nest(M%TQU(:,i),M%nside,MOut%TQU(:,i),nside_out, fmissval, pess)
     end do
+    if (isring) call HealpixMap_ForceRing(MOut)
     end if
   end subroutine HealpixMap_udgrade
 
@@ -1562,7 +1797,7 @@ contains
   ! real :: bas3(4) = (/  0,  0, -1,  1 /) /2.
    real :: bas2(4) = (/ -1,  1,  1,  -1 /)  /4.
    real :: bas3(4) = (/ -1,  1, -1,   1 /) /4.
-   if (M%npix <=12) stop 'Map too coarse to Haar transform'
+   if (M%npix <=12) call MpiStop( 'Map too coarse to Haar transform')
    call HealpixMap_ForceNest(M)
    call HealpixMap_Init(Mdetail,M%npix/4, M%nmaps*3, nested = .true.)
    call HealpixMap_udgrade(M,Mdegrade,M%nside/2, pessimistic = .true.)
@@ -1591,8 +1826,8 @@ contains
    real :: bas2(4) = (/ -1,  1,  1,  -1 /) 
    real :: bas3(4) = (/ -1,  1, -1,  1 /) 
 
-   if (Mdegrade%npix /= Mdetail%npix) stop 'map size mismatch'
-   if (mod(Mdetail%nmaps,3)/=0) stop 'detail not sets of 3 maps' 
+   if (Mdegrade%npix /= Mdetail%npix) call MpiStop('map size mismatch')
+   if (mod(Mdetail%nmaps,3)/=0) call MpiStop('detail not sets of 3 maps') 
    call HealpixMap_ForceNest(Mdegrade)
    call HealpixMap_ForceNest(Mdetail)
    call HealpixMap_Init(M,Mdegrade%npix*4, Mdegrade%nmaps/3, nested = .true.)
@@ -1666,17 +1901,17 @@ contains
    integer i, fac, j, pixcount
   
 
-   if (C%degraded%nmaps /= 1) stop 'Only does power spectra for single map'
-   if (nside_power < nside_map) stop 'Can only make map of power at lower resolution'
+   if (C%degraded%nmaps /= 1) call MpiStop('Only does power spectra for single map')
+   if (nside_power < nside_map) call MpiStop( 'Can only make map of power at lower resolution')
 
    call HealpixMap_Init(M, nside2npix(nside_map), nested = .true.)
    fac = nside2npix(nside_power) / M%npix
    j = 1
    do while (C%details(j)%nside > nside_power)
     j=j+1
-    if (j> C%order) stop 'Haar coeffs not available'
+    if (j> C%order) call MpiStop('Haar coeffs not available')
    end do
-   if (C%details(j)%nside /= nside_power) stop 'Haar coeffs not available'
+   if (C%details(j)%nside /= nside_power) call MpiStop('Haar coeffs not available')
    do i=0, M%npix-1
      pixcount =  count( C%details(j)%TQU(i*fac:(i+1)*fac - 1,:) /= fmissval) 
      if (pixcount /= 0) then
@@ -1695,7 +1930,7 @@ contains
    real(dp) P(C%order)
    integer i
 
-   if (C%degraded%nmaps /= 1) stop 'Only does power spectra for single map'
+   if (C%degraded%nmaps /= 1) call MpiStop('Only does power spectra for single map')
    do i=1, C%order
     P(i) = sum(C%details(i)%TQU(:,:)**2, mask = C%details(i)%TQU(:,:) /= fmissval) / &
            count(C%details(i)%TQU(:,:)/=fmissval)

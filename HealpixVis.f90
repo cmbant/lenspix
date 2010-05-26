@@ -7,8 +7,11 @@ module HealpixVis
   implicit none
 
   ! visualisation PPM type
-  logical :: VisDebugMsgs = .false.
-
+  logical :: VisDebugMsgs = .true.
+  logical :: HealpixVis_force_range = .false.
+  real :: HealpixVis_abs_max = 500.
+  integer, parameter :: HealpixVis_DEF_WIDTH = 800, HealpixVis_DEF_HEIGHT=400
+  
   type HealpixPPM
     integer :: nx, ny
     integer, dimension(:,:,:), pointer :: rgb
@@ -89,16 +92,18 @@ contains
 
   ! Plot map as PPM image using given projection and colourmap
 
-  subroutine HealpixVis_map2ppm(M, ppm, projection, n, nx, ny, plot)
+  subroutine HealpixVis_map2ppm(M, ppm, projection, n, nx, ny, plot, symmetric)
     type(HealpixMap), intent(in) :: M
     type(HealpixPPM), intent(inout) :: ppm
     integer, intent(in), optional :: n
     integer, intent(in), optional :: nx, ny
     integer, intent(in), optional :: plot
+    logical, intent(in), optional :: symmetric
     character(LEN=*), intent(in), optional :: projection
     character proj
     integer plotopt
     integer nn, nyy,nxx
+    logical symm
     real(SP), dimension(:), allocatable :: AmpArr
 
     if (present(plot)) then
@@ -107,6 +112,11 @@ contains
        plotopt = splot_none
     end if   
 
+    if (present(symmetric)) then
+     symm = symmetric
+    else 
+     symm = .false. 
+    end if
     if (present(Projection)) then
      proj = projection(1:1)
     else
@@ -124,16 +134,16 @@ contains
          nxx = nx
         else
          if (proj=='O') then
-           nxx = 400
+           nxx = HealpixVis_DEF_HEIGHT
           else
-           nxx = 800
+           nxx = HealpixVis_DEF_WIDTH
           end if
        end if
 
        if (present(ny)) then
          nyy = ny
         else
-         nyy = 400
+         nyy = HealpixVis_DEF_HEIGHT
        end if
 
     if (plotopt /= splot_none) then
@@ -151,18 +161,18 @@ contains
             AmpArr = M%Phi
         end if
         if (proj == 'M') then
-          call HealpixVis_map2ppm2(M, ppm, HealpixVis_proj_mol,  nn, nxx, nyy, AmpArr)
+          call HealpixVis_map2ppm2(M, ppm, HealpixVis_proj_mol,  nn, nxx, nyy, AmpArr, symmetric=symm)
         else if (proj=='O') then
-         call HealpixVis_map2ppm2(M, ppm, HealpixVis_proj_orth,  nn, nxx, nyy, AmpArr)
+         call HealpixVis_map2ppm2(M, ppm, HealpixVis_proj_orth,  nn, nxx, nyy, AmpArr, symmetric=symm)
         else
           stop 'HealpixVis_map2ppm: unsupported projection'
         end if
         deallocate(AmpArr)
     else
         if (proj == 'M') then
-          call HealpixVis_map2ppm2(M, ppm, HealpixVis_proj_mol,  nn, nxx, nyy)
+          call HealpixVis_map2ppm2(M, ppm, HealpixVis_proj_mol,  nn, nxx, nyy, symmetric=symm)
         else if (proj=='O') then
-         call HealpixVis_map2ppm2(M, ppm, HealpixVis_proj_orth,  nn, nxx, nyy)
+         call HealpixVis_map2ppm2(M, ppm, HealpixVis_proj_orth,  nn, nxx, nyy, symmetric=symm)
         else
           stop 'HealpixVis_map2ppm: unsupported projection'
         end if
@@ -259,13 +269,15 @@ contains
   end subroutine HealpixVis_map2Anim
 
 
- subroutine HealpixVis_Map2ppmfile(M, fname, projection, plot, n)
+ subroutine HealpixVis_Map2ppmfile(M, fname, projection, plot, n, symmetric)
     type(HealpixMap), intent(in) :: M
     type(HealpixPPM):: ppm
     character(LEN=*), intent(in) :: fname
     character(LEN=*), intent(in), optional :: projection
     integer, intent(in), optional :: plot, n
+    logical, intent(in), optional ::  symmetric
     integer splot, an
+    logical symm
 
     splot = splot_none
     if (present(plot)) then
@@ -277,11 +289,17 @@ contains
     else
        an = 1
     end if
+    
+    if (present(symmetric)) then
+     symm = symmetric
+    else 
+     symm = .false. 
+    end if
 
     if (present(projection)) then 
-     call HealpixVis_Map2PPM(M,ppm,projection,n=an,plot = splot)
+     call HealpixVis_Map2PPM(M,ppm,projection,n=an,plot = splot, symmetric=symm)
     else 
-     call HealpixVis_Map2PPM(M,ppm,n=an,plot = splot)
+     call HealpixVis_Map2PPM(M,ppm,n=an,plot = splot, symmetric=symm)
     end if
 
     call HealpixVis_ppm_write(ppm, fname)
@@ -371,11 +389,12 @@ contains
 
 
 
-  subroutine HealpixVis_map2ppm2(M, ppm, projection, n, nxx, nyy, pixarr, R)
+  subroutine HealpixVis_map2ppm2(M, ppm, projection, n, nxx, nyy, pixarr, R, symmetric)
     use pix_tools, only : Ang2vec
     type(HealpixMap), intent(in) :: M
     real(sp), intent(in), target, optional :: pixarr(0:)
     integer, intent(in) :: n
+    logical, intent(in), optional :: symmetric
     type(HealpixPPM), intent(inout) :: ppm
     real(dp), intent(in), optional :: R(3,3)
     !character(LEN=*), intent(in) :: colmap
@@ -388,7 +407,7 @@ contains
       end subroutine projection
     end interface
 
-    real :: maprange, mapmin, value, n2
+    real :: maprange, mapmin, mapmax, value, n2
     real(dp) :: theta, phi
     integer :: off,i, j, k, l, xsize, ysize, nxx, nyy
     real :: x, y, xbase, ybase, xpix, ypix, xsubpix, ysubpix
@@ -419,7 +438,20 @@ contains
     xsize = ppm%nx
     ysize = ppm%ny
     mapmin = minval(PPix)
-    maprange = maxval(PPix)-mapmin
+    mapmax = maxval(PPix)
+    if (present(symmetric)) then
+     if (symmetric) then
+      !symmetric about zero
+       mapmin = min(mapmin,-mapmax)
+       mapmax = -mapmin
+     end if
+    end if
+   if (HealpixVis_force_range) then
+     mapmin = -HealpixVis_abs_max
+     maprange = 2*HealpixVis_abs_max
+   else
+     maprange = mapmax-mapmin
+   end if
    if (VisDebugMsgs) then
      write (*,*) 'Map min = ',mapmin, 'Map max = ',maprange+mapmin
    end if
@@ -472,6 +504,37 @@ contains
 
   end subroutine HealpixVis_map2ppm2
 
+
+    subroutine HealpixVis_MapMask2ppm(WM,WeightMap, fname, range) 
+     Type(HealpixMap) :: WM, WeightMap
+     character(LEN=*) :: fname 
+     type(HealpixPPM):: ppm, ppmmask
+     real, intent(in), optional :: range
+     integer i,j
+     logical :: old_force
+     old_force = HealpixVis_force_range
+     HealpixVis_force_range = .true.
+     if (present(range)) then
+      HealpixVis_abs_max = range
+     else
+      HealpixVis_abs_max = 500.
+     end if
+     call HealpixVis_Map2ppm(WM,ppm, n=4,plot = splot_none,symmetric = .true.)
+     HealpixVis_force_range = .false.
+     call HealpixVis_Map2ppm(WeightMap,ppmmask, n=1,plot = splot_none,symmetric = .false.)    
+     do i=1,HealpixVis_DEF_WIDTH
+      do j=1,HealpixVis_DEF_HEIGHT
+       if (ppmmask%rgb(3,i,j)/=0 .and.  ppmmask%rgb(1,i,j)==0) then
+         ppm%rgb(:,i,j)=0
+       end if  
+      end do
+     end do 
+    call HealpixVis_ppm_write(ppm,  fname)
+    call HealpixVis_ppm_Free(ppm)
+    call HealpixVis_ppm_Free(ppmmask)
+    HealpixVis_force_range = old_force
+    
+    end subroutine HealpixVis_MapMask2ppm
 
 
   !======================================================================

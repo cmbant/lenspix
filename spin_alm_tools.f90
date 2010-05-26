@@ -1,13 +1,15 @@
+!To Do: check pole_edge, probably should be 1..npix, not npix..1
+
 !MPI Healpix routines, including generation of spin-s maps, 
 !mapping gradients of scalars and the exact and approx weak lensed CMB 
-!Antony Lewis 2004-2007, Based on Healpix 2
+!Antony Lewis 2004-2008, Based on Healpix 2
 
 !Requires linking to Healpix libraries:
 !See http://www.eso.org/science/healpix/
 
 !Sign conventions follow Healpix/CMBFAST/CAMB
 !Most easily used using HealpixObj.f90 wrapper routines
-!Compile with -DMPIPIX to use MPI
+!Compile with -DMPIPIX -to use MPI
 
 !Performance could be improved by changing the theta-CPU sharing
 !However scaling is quite good up to 50 or so processors for high res transforms
@@ -18,6 +20,7 @@
 !Sept 2005: fixed bug in map2polalm
 !Nov 2007: added bicubic interpolation, temp only, speedups
 !Dec 2007: multiple map transforms, reduced memory requirements
+!Jan 2008: further memory reductions for non-lensed; one MPI thread workarounds for scalar
 
 module MPIstuff
 implicit none
@@ -29,6 +32,13 @@ double precision starttime
     integer SP_MPI,CSP_MPI 
 #endif
 contains
+   
+  subroutine MpiBarrier
+  integer i
+#ifdef MPIPIX
+  call MPI_BARRIER(MPI_COMM_WORLD,i)
+#endif
+  end subroutine MpiBarrier
 
   subroutine GetMpiStat(MpiId, MpiSize)
    implicit none
@@ -46,7 +56,6 @@ contains
   MpiSize=1   
 #endif
   end subroutine GetMpiStat
-
 
  subroutine SyncInts(i,j,k)
   integer, intent(inout) :: i
@@ -189,7 +198,7 @@ module spinalm_tools
             alm2LensedmapInterpCyl, interp_basic, interp_cyl , GeteTime, &
             division_equalrows, division_equalpix, division_balanced, HealpixMapArray, &
             HealpixCrossPowers, HealpixAllCl, maparray2scalcrosspowers,maparray2crosspowers, &
-            HealpixCrossPowers_Free
+            HealpixCrossPowers_Free, healpix_wakeMPI, healpix_sleepMPI
 contains
 
  function GeteTime()
@@ -319,12 +328,10 @@ contains
         else
          stop 'Unknown SP KIND for MPI'
         end if
-               
+        
+        call mpi_comm_size(mpi_comm_world,H%MpiSize,ierror)
         call mpi_comm_rank(mpi_comm_world,H%MpiId,ierror)
         if (ierror/=MPI_SUCCESS) stop 'HealpixInit: MPI rank'
-
-        call mpi_comm_size(mpi_comm_world,H%MpiSize,ierror)
-     !   call mpi_buffer_attach(H%MPIBuffer,MPIBUfSize, ierror)
 #endif
 
 !Sectioning of the sphere between threads
@@ -471,13 +478,12 @@ contains
                   nph = 4*nside
             endif
             if (H%ith_end(i) == nside*2) then
-             H%South_start(i) = H%istart_south(H%ith_end(i)-1)
+              H%South_start(i) = H%istart_south(H%ith_end(i)-1)
             else
              H%South_start(i) = H%istart_south(H%ith_end(i))
             end if
             H%South_Size(i) = H%istart_south(H%ith_start(i)) + nph &
                               - H%South_start(i)
-
 
         end do
 #ifdef MPIPIX
@@ -1857,7 +1863,7 @@ contains
     COMPLEX(SPC), INTENT(IN),  DIMENSION(:,:,:) :: alm
     REAL(SP),     INTENT(OUT), DIMENSION(0:12*H%nside**2-1), target :: map
 
-    REAL(SP),     DIMENSION(:), pointer :: map2
+    REAL(SP),     DIMENSION(:), pointer :: map2N, map2S
     COMPLEX(SPC), DIMENSION(:), allocatable :: alm2
 
     INTEGER(I4B) :: l, m, ith, scalem, scalel, nlmax          ! alm related
@@ -1896,14 +1902,21 @@ contains
      allocate(alm2(nalms))
      if (H%MpiId==0) call Alm2PackAlm(alm,alm2,nlmax)
     
-#ifdef MPIPIX 
+#ifdef MPIPIX
      call MPI_BCAST(alm2,SIze(alm2),CSP_MPI, 0, MPI_COMM_WORLD, ierr) 
-
      if(DebugMsgs>1) print *,code //': Got alm ',H%MpiId, GeteTime() - StartTime
-     allocate(map2(0:12*nsmax**2-1), stat = status)    
-     if (status /= 0) call die_alloc(code,'map2')
+     if (H%MpiId==0) then
+      map2N => map
+      map2S => map
+     else
+      allocate(map2N(H%North_Start(H%MpiId):H%North_Start(H%MpiId)+H%North_Size(H%MpiId)-1),stat = status) 
+      if (status /= 0) call die_alloc(code,'map2')   
+      allocate(map2S(H%South_Start(H%MpiId):H%South_Start(H%MpiId)+H%South_Size(H%MpiId)-1),stat = status) 
+      if (status /= 0) call die_alloc(code,'map2')
+     end if   
 #else
-     map2 => map 
+     map2S => map 
+     map2N => map 
 #endif
 
     call HealpixInitRecfac(H,nlmax)
@@ -2006,8 +2019,6 @@ contains
                  b_s = b_s - corfac*lam_2*alm2(a_ix)
           end if
 
-
-
 !          do l = m+1, nlmax
 !             par_lm = - par_lm  ! = (-1)^(l+m)
 !
@@ -2043,11 +2054,11 @@ contains
        enddo
 
        call spinring_synthesis(H,nlmax,b_north,nph,ring,kphi0,mmax_ring)   ! north hemisph. + equator
-       map2(H%istart_north(ith-1):H%istart_north(ith-1)+nph-1) = ring(0:nph-1)
+       map2N(H%istart_north(ith-1):H%istart_north(ith-1)+nph-1) = ring(0:nph-1)
        
        if (ith < 2*nsmax) then
           call spinring_synthesis(H,nlmax,b_south,nph,ring,kphi0,mmax_ring) ! south hemisph. w/o equat
-          map2(H%istart_south(ith):H%istart_south(ith)+nph-1) = ring(0:nph-1)
+          map2S(H%istart_south(ith):H%istart_south(ith)+nph-1) = ring(0:nph-1)
        endif
 
     enddo    ! loop on cos(theta)
@@ -2061,14 +2072,23 @@ contains
     if(DebugMsgs>1) print *,code //' Gather ',H%MpiId
     
     StartTime = Getetime()
-    call MPI_GATHERV(map2(H%North_Start(H%MpiId)),H%North_Size(H%MpiId),SP_MPI, &
+    if (H%MpiSize>1) then
+    if (H%MpiID==0) then
+     call MPI_GATHERV(MPI_IN_PLACE,H%North_Size(H%MpiId),SP_MPI, &
        map,H%North_Size,H%North_Start,SP_MPI, 0 ,MPI_COMM_WORLD, ierr)
-    call MPI_GATHERV(map2(H%South_Start(H%MpiId)),H%South_Size(H%MpiId),SP_MPI, &
-       map,H%South_Size,H%South_Start,SP_MPI, 0 ,MPI_COMM_WORLD, ierr)
-!    call MPI_REDUCE(map2,map,size(map),SP_MPI,MPI_SUM,0,MPI_COMM_WORLD,l) 
+     call MPI_GATHERV(MPI_IN_PLACE,H%South_Size(H%MpiId),SP_MPI, &
+       map,H%South_Size,H%South_Start,SP_MPI, 0 ,MPI_COMM_WORLD, ierr) 
+    else
+     call MPI_GATHERV(map2N(H%North_Start(H%MpiId)),H%North_Size(H%MpiId),SP_MPI, &
+       map,H%North_Size,H%North_Start,SP_MPI, 0 ,MPI_COMM_WORLD, ierr)
+     call MPI_GATHERV(map2S(H%South_Start(H%MpiId)),H%South_Size(H%MpiId),SP_MPI, &
+       map,H%South_Size,H%South_Start,SP_MPI, 0 ,MPI_COMM_WORLD, ierr) 
+     if (H%MpiId > 0) deallocate(map2N,map2S)
+    end if
+    end if
     if (DebugMsgs>1) print *,code //' Done Gather ',H%MpiId, Getetime()-StartTime
     if (DebugMsgs>0 .and. H%MpiId==0) print *,code //' Time :', GeteTime()-IniTime
-    deallocate(map2)
+    
 
 #endif
   end subroutine scalalm2map
@@ -2155,12 +2175,14 @@ contains
     StartTime = getetime()    
     call SyncInts(nlmax)
 
-    call MPI_SCATTERV(map,H%North_Size, H%North_Start, &
+     !Inplace doesn't seem to work here?? Also bug in openmpi 1.2.2 for MpiSize=1
+    if (H%MpiSize>1) then
+     call MPI_SCATTERV(map,H%North_Size, H%North_Start, &
        SP_MPI, map2N(H%North_Start(H%MpiId)),H%North_Size(H%MpiId),SP_MPI, 0 ,MPI_COMM_WORLD, ierr)
-    call MPI_SCATTERV(map,H%South_Size, H%South_Start, &
+     call MPI_SCATTERV(map,H%South_Size, H%South_Start, &
        SP_MPI, map2S(H%South_Start(H%MpiId)),H%South_Size(H%MpiId),SP_MPI, 0 ,MPI_COMM_WORLD, ierr)
+    end if
     if(DebugMsgs>1) print *,code //' Scattered ',H%MpiId, GeteTime() - StartTime
-!   call MPI_BCAST(map,SIze(Map),SP_MPI, 0, MPI_COMM_WORLD, ierr) 
 #else
     map2N => map
     map2S => map
@@ -2420,13 +2442,14 @@ contains
       call PackAlm2Alm(alm2, alm, nlmax)
       print *,code // ' Time: ', GeteTime() - IniTime
     end if
-    deallocate(alm2)
 #else
     call PackAlm2Alm(alm2, alm, nlmax)
-    deallocate(alm2)
 #endif
+    deallocate(alm2)
 
   END subroutine map2scalalm
+
+
   
   subroutine HealpixCrossPowers_Free(P)
    Type (HealpixCrossPowers) :: P
@@ -2442,7 +2465,7 @@ contains
 
   end subroutine HealpixCrossPowers_Free
 
-  subroutine maparray2scalcrosspowers(H,inlmax, maps, P, nmaps)
+  subroutine maparray2scalcrosspowers(H,inlmax, maps, P, nmaps, free)
     !=======================================================================
     ! Compute power array 1/(2l+1)\sum_m <alm(1)alm(2)^*> for all maps
     !=======================================================================
@@ -2452,6 +2475,9 @@ contains
     Type (HealpixMapArray), target :: maps(:)
     Type (HealpixCrossPowers) :: P
     integer, intent(in) :: nmaps
+    logical, intent(in), optional :: free
+    logical dofree
+    
     Type(HealpixPackedScalAlms) :: A
     CHARACTER(LEN=*), PARAMETER :: code = 'MAPARRAY2SCALCROSSPOWERS'
     integer l,i,j,m, ix
@@ -2459,8 +2485,13 @@ contains
 #ifdef MPIPIX    
     double precision Initime
 #endif      
+    if (present(free)) then
+     dofree=free
+    else
+     dofree = .false.
+    end if  
 
-    call maparray2packedscalalms(H,inlmax, maps, A, nmaps)
+    call maparray2packedscalalms(H,inlmax, maps, A, nmaps, dofree)
 
     if (H%MpiId==0) then
 #ifdef MPIPIX
@@ -2514,7 +2545,7 @@ contains
     
   end subroutine maparray2scalcrosspowers   
 
-  subroutine maparray2crosspowers(H,inlmax, maps, P, nmaps)
+  subroutine maparray2crosspowers(H,inlmax, maps, P, nmaps, free)
     !=======================================================================
     ! Compute power array 1/(2l+1)\sum_m <alm(1)alm(2)^*> for all maps
     !=======================================================================
@@ -2528,11 +2559,18 @@ contains
     CHARACTER(LEN=*), PARAMETER :: code = 'MAPARRAY2CROSSPOWERS'
     integer l,i,j,m, ix, polx,poly
     real(DP), dimension(:,:,:,:), allocatable :: Cl
+    logical, intent(in), optional :: free
+    logical dofree
+
 #ifdef MPIPIX    
     double precision Initime
 #endif      
-
-    call maparray2packedpolalms(H,inlmax, maps, A, nmaps)
+    if (present(free)) then
+     dofree=free
+    else
+     dofree = .false.
+    end if  
+    call maparray2packedpolalms(H,inlmax, maps, A, nmaps, dofree)
 
     if (H%MpiId==0) then
 #ifdef MPIPIX
@@ -2600,7 +2638,7 @@ contains
   end subroutine maparray2crosspowers   
 
 
-  subroutine maparray2packedscalalms(H,inlmax, maps, outalm, in_nmap)
+  subroutine maparray2packedscalalms(H,inlmax, maps, outalm, in_nmap, dofree)
     !=======================================================================
     ! Compute power array 1/(2l+1)\sum_m <alm(1)alm(2)^*> for all maps
     !=======================================================================
@@ -2613,6 +2651,7 @@ contains
     Type(HealpixPackedScalAlms) :: outalm
     integer, intent(in) :: in_nmap
     integer nmaps
+    logical dofree
     
     COMPLEX(SPC), DIMENSION(:,:), pointer :: alm2
     Type (HealpixMapArray), dimension(:), pointer ::  map2N,map2S
@@ -2678,6 +2717,18 @@ contains
     call MPI_SCATTERV(amap%M,H%South_Size, H%South_Start, &
        SP_MPI, map2S(map_ix)%M(H%South_Start(H%MpiId),1),H%South_Size(H%MpiId),SP_MPI, 0 ,MPI_COMM_WORLD, ierr)
    end do
+   if (H%MpiId==0 .and. dofree) then
+       allocate(map2N(nmaps),map2S(nmaps))
+       do map_ix=1,nmaps
+        allocate(map2N(map_ix)%M(H%North_Start(H%MpiId):H%North_Start(H%MpiId)+H%North_Size(H%MpiId)-1,1))
+        allocate(map2S(map_ix)%M(H%South_Start(H%MpiId):H%South_Start(H%MpiId)+H%South_Size(H%MpiId)-1,1))
+        map2N(map_ix)%M(H%North_Start(H%MpiId):H%North_Start(H%MpiId)+H%North_Size(H%MpiId)-1,1) = &
+         maps(map_ix)%M(H%North_Start(H%MpiId):H%North_Start(H%MpiId)+H%North_Size(H%MpiId)-1,1)
+        map2S(map_ix)%M(H%South_Start(H%MpiId):H%South_Start(H%MpiId)+H%South_Size(H%MpiId)-1,1) = &
+         maps(map_ix)%M(H%South_Start(H%MpiId):H%South_Start(H%MpiId)+H%South_Size(H%MpiId)-1,1) 
+        deallocate(maps(map_ix)%M)
+       end do
+    end if
     if(DebugMsgs>1) print *,code //' Scattered ',H%MpiId, GeteTime() - StartTime
 #else
     map2N => maps
@@ -2832,7 +2883,7 @@ contains
     call HealpixFreeRecFac(H)
     
 #ifdef MPIPIX
-    if (H%MpiId>0) then
+    if (H%MpiId>0 .or. dofree) then
       do map_ix=1,nmaps
        deallocate(map2N(map_ix)%M,map2S(map_ix)%M)
       end do
@@ -2848,19 +2899,222 @@ contains
      deallocate(outalm%alms)
     end if
     if (DebugMsgs>1) print *,code //': Time at reduce ', H%MpiId, GeteTime() -StartTime
-    
+#else
+   if (dofree) then
+      do map_ix=1,nmaps
+       deallocate(maps(map_ix)%M)
+      end do
+   end if    
 #endif
 
   END subroutine maparray2packedscalalms
 
 
-  subroutine maparray2packedpolalms(h, inlmax, maps,outTEB, in_nmap)
+  subroutine maparray2packedscalalms1(H,nlmax, maps, outalm, nmaps)
+    !=======================================================================
+    ! Compute power array 1/(2l+1)\sum_m <alm(1)alm(2)^*> for all maps
+    !=======================================================================
+    !Allocates outalm%alms
+    !This is non-MPI version
+    use MPIStuff
+    Type (HealpixInfo) :: H
+    INTEGER(I4B)  :: nsmax
+    INTEGER(I4B), INTENT(IN) :: nlmax
+    Type (HealpixMapArray), target :: maps(:)
+    Type(HealpixPackedScalAlms) :: outalm
+    integer, intent(in) :: nmaps
+    CHARACTER(LEN=*), PARAMETER :: code = 'MAPARRAY2PACKEDSCALALMS1'
+    
+    COMPLEX(SPC), DIMENSION(:,:), pointer :: alm2
+    
+    INTEGER(I4B) :: l, m, ith, scalem, scalel,  a_ix       ! alm related
+    INTEGER(I4B) :: nph, kphi0   ! map related
+
+    REAL(DP) :: omega_pix
+    REAL(DP) :: cth, sth, dth1, dth2, dst1
+    REAL(DP) :: a_rec, lam_mm, lam_0, lam_1, lam_2
+    REAL(DP) ::  f2m, corfac
+
+    COMPLEX(DPC), DIMENSION(:,:), ALLOCATABLE :: phas_n
+    COMPLEX(DPC), DIMENSION(:,:), ALLOCATABLE :: phas_s
+    INTEGER(I4B) :: mmax_ring, status, nalms
+    COMPLEX(DPC), dimension(:), allocatable :: phas_p, phas_m
+
+    REAL(DP), DIMENSION(:),   ALLOCATABLE :: ring
+    integer lmin !, par_lm
+    integer map_ix
+    integer istart_north, istart_south
+    !=======================================================================
+
+
+    nsmax = H%nside
+     
+ 
+    ALLOCATE(phas_n(0:nlmax,nmaps),stat = status) 
+    if (status /= 0) call die_alloc(code,'phas_n')
+
+    ALLOCATE(phas_s(0:nlmax,nmaps),stat = status) 
+    if (status /= 0) call die_alloc(code,'phas_s')
+  
+    ALLOCATE(phas_p(nmaps),phas_m(nmaps)) 
+  
+    ALLOCATE(ring(0:4*nsmax-1),stat = status) 
+    if (status /= 0) call die_alloc(code,'ring')
+
+    !     ------------ initiate arrays ----------------
+
+    call HealpixInitRecfac(H,nlmax)
+
+    nalms = ((nlmax+1)*(nlmax+2))/2
+    
+    allocate(outalm%alms(nmaps,nalms), stat=status)
+    if (status /= 0) call die_alloc(code,'alm2')
+    alm2 => outalm%alms   
+  
+    alm2 = 0
+
+    istart_north = 0
+    istart_south = 12*nsmax**2
+
+    omega_pix = pi / (3.0_dp * nsmax * nsmax)
+
+    dth1 = 1.0_dp / (3.0_dp*DBLE(nsmax)**2)
+    dth2 = 2.0_dp / (3.0_dp*DBLE(nsmax))
+    dst1 = 1.0_dp / (SQRT(6.0_dp) * DBLE(nsmax) )
+
+    !-----------------------------------------------------------------------
+    !           computes the integral in phi : phas_m(theta)
+    !           for each parallele from north to south pole
+    !-----------------------------------------------------------------------
+    do ith = 1, 2*nsmax
+
+       phas_n = 0._dp 
+       phas_s = 0._dp
+       
+       if (ith .le. nsmax-1) then      ! north polar cap
+          nph = 4*ith
+          kphi0 = 1 
+          cth = 1.0_dp  - DBLE(ith)**2 * dth1
+          sth = SIN( 2.0_dp * ASIN( ith * dst1 ) ) ! sin(theta)
+       else                            ! tropical band + equat.
+          nph = 4*nsmax
+          kphi0 = MOD(ith+1-nsmax,2)
+          cth = DBLE(2*nsmax-ith) * dth2
+          sth = DSQRT((1.0_dp-cth)*(1.0_dp+cth)) ! sin(theta)
+       endif
+
+       mmax_ring = get_mmax(nlmax,sth) 
+
+       do map_ix = 1, nmaps
+         ring(0:nph-1) = maps(map_ix)%M(istart_north:istart_north+nph-1,1)* H%w8ring_TQU(ith,1)
+         call spinring_analysis(H,nlmax, ring, nph, phas_n(:,map_ix), kphi0, mmax_ring)
+       end do
+       istart_north = istart_north + nph
+       istart_south = istart_south - nph
+
+      if (ith .lt. 2*nsmax) then
+        do map_ix = 1, nmaps
+          ring(0:nph-1) = maps(map_ix)%M(istart_south:istart_south+nph-1,1) * H%w8ring_TQU(ith,1)
+          call spinring_analysis(H,nlmax, ring, nph, phas_s(:,map_ix), kphi0,mmax_ring)
+        end do
+       endif
+ 
+ 
+       !-----------------------------------------------------------------------
+       !              computes the a_lm by integrating over theta
+       !                  lambda_lm(theta) * phas_m(theta)
+       !                         for each m and l
+       !-----------------------------------------------------------------------
+
+          lam_mm = sq4pi_inv * omega_pix ! lambda_00 * norm
+          scalem=1 
+          a_ix = 0
+          do m = 0, mmax_ring
+             f2m = 2.0_dp * m
+         
+             !           ---------- l = m ----------
+             if (m .ge. 1) then ! lambda_0_0 for m>0
+                lam_mm = -lam_mm*sth*dsqrt((f2m+1.0_dp)/f2m)
+             endif
+
+             if (abs(lam_mm).lt.UNFLOW) then
+                lam_mm=lam_mm*OVFLOW
+                scalem=scalem-1
+             endif
+             corfac = ScaleFactor(scalem)*lam_mm/OVFLOW
+             
+             phas_p=phas_n(m,:) + phas_s(m,:)
+             phas_m=phas_n(m,:) - phas_s(m,:)
+             
+             a_ix = a_ix + 1
+             alm2(:,a_ix) = alm2(:,a_ix) + corfac * phas_p
+             !           ---------- l > m ----------
+             lam_0 = 0.0_dp
+             lam_1 = 1.0_dp
+             scalel=0
+             a_rec = H%recfac(a_ix)
+             lam_2 = cth * lam_1 * a_rec
+
+             lmin = l_min_ylm(m, sth)
+             do l = m+1, nlmax-1, 2
+   
+                a_ix = a_ix+1
+
+                lam_0 = lam_1 / a_rec
+                lam_1 = lam_2
+      
+                a_rec = H%recfac(a_ix)
+                lam_2 = (cth * lam_1 - lam_0) * a_rec
+      
+                if (l >= lmin) then
+                 alm2(:,a_ix) = alm2(:,a_ix) + (lam_1*corfac) * phas_m
+                 alm2(:,a_ix+1) = alm2(:,a_ix+1) + (lam_2*corfac) * phas_p
+                end if
+
+                lam_0 = lam_1 / a_rec
+                lam_1 = lam_2
+                a_ix = a_ix+1
+                a_rec = H%recfac(a_ix)
+                lam_2 = (cth * lam_1 - lam_0) * a_rec
+
+                if (abs(lam_1+lam_2) .gt. OVFLOW) then
+                   lam_0=lam_0/OVFLOW
+                   lam_1=lam_1/OVFLOW
+                   lam_2 = (cth * lam_1 - lam_0) * a_rec
+                   scalel=scalel+1
+                   corfac = ScaleFactor(scalem+scalel)*lam_mm/OVFLOW
+                elseif (abs(lam_1+lam_2) .lt. UNFLOW) then
+                   lam_0=lam_0*OVFLOW
+                   lam_1=lam_1*OVFLOW
+                   lam_2 = (cth * lam_1 - lam_0) * a_rec 
+                   scalel=scalel-1
+                   corfac = ScaleFactor(scalem+scalel)*lam_mm/OVFLOW
+                endif
+             enddo ! loop on l
+             if (mod(nlmax-m,2)==1) then
+                a_ix = a_ix+1
+                alm2(:,a_ix) = alm2(:,a_ix) + (lam_2*corfac) * phas_m
+             end if
+          enddo ! loop on m
+    enddo ! loop on theta
+
+
+    DEALLOCATE(phas_n, phas_s)
+    DEALLOCATE(phas_p, phas_m)
+    DEALLOCATE(ring)
+    call HealpixFreeRecFac(H)
+
+  END subroutine maparray2packedscalalms1
+
+
+  subroutine maparray2packedpolalms(h, inlmax, maps,outTEB, in_nmap, dofree)
     use mpistuff
     type (healpixinfo) :: h
     integer(i4b), intent(in) :: inlmax
     Type (HealpixMapArray), target :: maps(:)
     Type(HealpixPackedAlms) :: outTEB
     integer, intent(in) :: in_nmap
+    logical, intent(in) :: dofree
 
     integer(i4b)  :: nsmax, nmaps
     complex(spc), dimension(:,:,:), pointer :: TEB
@@ -2940,6 +3194,20 @@ contains
      end do
     end do
     if(debugmsgs>1) print *,code //' scattered ',h%MpiId, getetime() - starttime
+   if (H%MpiId==0 .and. dofree) then
+       allocate(map2N(nmaps),map2S(nmaps))
+       do map_ix=1,nmaps
+        allocate(map2N(map_ix)%M(H%North_Start(H%MpiId):H%North_Start(H%MpiId)+H%North_Size(H%MpiId)-1,3))
+        allocate(map2S(map_ix)%M(H%South_Start(H%MpiId):H%South_Start(H%MpiId)+H%South_Size(H%MpiId)-1,3))
+        do i=1,3
+        map2N(map_ix)%M(H%North_Start(H%MpiId):H%North_Start(H%MpiId)+H%North_Size(H%MpiId)-1,i) = &
+         maps(map_ix)%M(H%North_Start(H%MpiId):H%North_Start(H%MpiId)+H%North_Size(H%MpiId)-1,i)
+        map2S(map_ix)%M(H%South_Start(H%MpiId):H%South_Start(H%MpiId)+H%South_Size(H%MpiId)-1,i) = &
+         maps(map_ix)%M(H%South_Start(H%MpiId):H%South_Start(H%MpiId)+H%South_Size(H%MpiId)-1,i) = &
+        end do   
+        deallocate(maps(map_ix)%M)
+       end do
+   end if
 #else
     map2N => maps
     map2S => maps
@@ -3180,7 +3448,7 @@ contains
     deallocate(phas_Qp,phas_Qm,phas_UM,phas_Up,phas_p,phas_m,Iphas_Qp,Iphas_Qm,Iphas_UM,Iphas_Up)
     deallocate(ring)
 #ifdef MPIPIX
-    if (H%MpiId>0) then
+    if (H%MpiId>0 .or. dofree) then
       do map_ix=1,nmaps
        deallocate(map2N(map_ix)%M,map2S(map_ix)%M)
       end do
@@ -3195,6 +3463,13 @@ contains
     end if
     if (debugmsgs>1) print *,code//' time at reduce ', h%MpiId, getetime() -starttime
     if (debugmsgs>0 .and. h%MpiId==0) print *,code //' time: ',getetime() - initime
+#else
+   if (dofree) then
+      do map_ix=1,nmaps
+       deallocate(maps(map_ix)%M)
+      end do
+   end if  
+
 #endif
 
   end subroutine maparray2packedpolalms
@@ -6989,7 +7264,7 @@ contains
     COMPLEX(SPC), INTENT(IN),  DIMENSION(:,:,:) :: alm_TEB
     REAL(SP), INTENT(OUT), DIMENSION(0:12*H%nside**2-1,3), target :: map_TQU
     COMPLEX(SPC), DIMENSION(:,:), allocatable :: TEB
-    REAL(SP), DIMENSION(:,:), pointer :: map2
+    REAL(SP), DIMENSION(:,:), pointer :: map2N,map2S
     INTEGER(I4B) :: l, m, ith, scalem, scalel          ! alm related
     INTEGER(I4B) :: nph, kphi0 ! map related
 
@@ -7040,11 +7315,20 @@ contains
 #ifdef MPIPIX
      call MPI_BCAST(TEB,SIze(TEB),CSP_MPI, 0, MPI_COMM_WORLD, ierr) 
      if(DebugMsgs>1) print *,code //': Got alm ',H%MpiId, GeteTime() - StartTime
-     allocate(map2(0:12*nsmax**2-1,3), stat = status)    
-     if (status /= 0) call die_alloc(code,'map2')
+     if (H%MpiId==0) then
+      map2N => map_TQU
+      map2S => map_TQU
+     else
+      allocate(map2N(H%North_Start(H%MpiId):H%North_Start(H%MpiId)+H%North_Size(H%MpiId)-1,3),stat = status) 
+      if (status /= 0) call die_alloc(code,'map2')   
+      allocate(map2S(H%South_Start(H%MpiId):H%South_Start(H%MpiId)+H%South_Size(H%MpiId)-1,3),stat = status) 
+      if (status /= 0) call die_alloc(code,'map2')
+     end if   
 #else
-     map2 => map_TQU 
+     map2S => map_TQU 
+     map2N => map_TQU
 #endif
+
 
     ALLOCATE(lam_fact(nalms),stat = status)    
     if (status /= 0) call die_alloc(code,'lam_fact')
@@ -7223,19 +7507,19 @@ contains
        enddo
 
        call spinring_synthesis(H,nlmax,b_north,nph,ring,kphi0,mmax_ring)   
-       map2(H%istart_north(ith-1):H%istart_north(ith-1)+nph-1,1) = ring(0:nph-1)
+       map2N(H%istart_north(ith-1):H%istart_north(ith-1)+nph-1,1) = ring(0:nph-1)
        call spinring_synthesis(H,nlmax, b_north_Q, nph, ring, kphi0,mmax_ring)
-       map2(H%istart_north(ith-1):H%istart_north(ith-1)+nph-1,2) = ring(0:nph-1)
+       map2N(H%istart_north(ith-1):H%istart_north(ith-1)+nph-1,2) = ring(0:nph-1)
        call spinring_synthesis(H,nlmax, b_north_U, nph, ring, kphi0,mmax_ring)
-       map2(H%istart_north(ith-1):H%istart_north(ith-1)+nph-1,3) = ring(0:nph-1)
+       map2N(H%istart_north(ith-1):H%istart_north(ith-1)+nph-1,3) = ring(0:nph-1)
   
        if (ith  <  2*nsmax) then
           call spinring_synthesis(H,nlmax, b_south, nph, ring, kphi0,mmax_ring)
-          map2(H%istart_south(ith):H%istart_south(ith)+nph-1,1) = ring(0:nph-1)
+          map2S(H%istart_south(ith):H%istart_south(ith)+nph-1,1) = ring(0:nph-1)
           call spinring_synthesis(H,nlmax, b_south_Q, nph, ring, kphi0,mmax_ring)
-          map2(H%istart_south(ith):H%istart_south(ith)+nph-1,2) = ring(0:nph-1)
+          map2S(H%istart_south(ith):H%istart_south(ith)+nph-1,2) = ring(0:nph-1)
           call spinring_synthesis(H,nlmax, b_south_U, nph, ring, kphi0,mmax_ring)
-          map2(H%istart_south(ith):H%istart_south(ith)+nph-1,3) = ring(0:nph-1)
+          map2S(H%istart_south(ith):H%istart_south(ith)+nph-1,3) = ring(0:nph-1)
        endif
 
     enddo    ! loop on cos(theta)
@@ -7255,15 +7539,24 @@ contains
 #ifdef MPIPIX
     if(DebugMsgs>1) print *,code//' Gather ',H%MpiId
     StartTime = Getetime()
-    do i=1,3
-    call MPI_GATHERV(map2(H%North_Start(H%MpiId),i),H%North_Size(H%MpiId),SP_MPI, &
-       map_TQU(:,i),H%North_Size,H%North_Start,SP_MPI, 0 ,MPI_COMM_WORLD, ierr)
-    call MPI_GATHERV(map2(H%South_Start(H%MpiId),i),H%South_Size(H%MpiId),SP_MPI, &
-       map_TQU(:,i),H%South_Size,H%South_Start,SP_MPI, 0 ,MPI_COMM_WORLD, ierr)
-    end do
+    if (H%MpiSize>1) then
+     do i=1,3
+        if (H%MpiID==0) then
+         call MPI_GATHERV(MPI_IN_PLACE,H%North_Size(H%MpiId),SP_MPI, &
+          map_TQU(:,i),H%North_Size,H%North_Start,SP_MPI, 0 ,MPI_COMM_WORLD, ierr)
+         call MPI_GATHERV(MPI_IN_PLACE,H%South_Size(H%MpiId),SP_MPI, &
+          map_TQU(:,i),H%South_Size,H%South_Start,SP_MPI, 0 ,MPI_COMM_WORLD, ierr)
+        else
+         call MPI_GATHERV(map2N(H%North_Start(H%MpiId),i),H%North_Size(H%MpiId),SP_MPI, &
+          map_TQU(:,i),H%North_Size,H%North_Start,SP_MPI, 0 ,MPI_COMM_WORLD, ierr)
+         call MPI_GATHERV(map2S(H%South_Start(H%MpiId),i),H%South_Size(H%MpiId),SP_MPI, &
+          map_TQU(:,i),H%South_Size,H%South_Start,SP_MPI, 0 ,MPI_COMM_WORLD, ierr)
+        end if
+     end do
+    end if
     if(DebugMsgs>1) print *,code //' Done Gather ',H%MpiId, Getetime()-StartTime
     if (DebugMsgs>0 .and. H%MpiId==0) print *,code // ' Time: ', GeteTime() - iniTime
-    deallocate(map2) 
+    if (H%MpiID>0) deallocate(map2N,map2S) 
 #endif
 
   end subroutine polalm2map
@@ -7373,7 +7666,27 @@ subroutine PackTEB2TEB(almin,almout, nlmax)
 
  end  subroutine PackTEB2TEB
 
+  subroutine healpix_sleepMPI(h)
+    use mpistuff
+    use AMLutils
+    type (healpixinfo) :: h
+    character(len=*), parameter :: code = 'WAIT'
+    
+#ifdef MPIPIX
+     if (h%MpiId==0) then 
+      call sendmessages(h,code)
+     else
+      call MpiQuietWait   
+     end if
+#endif
+  end  subroutine healpix_sleepMPI
 
+   
+   subroutine healpix_wakeMPI
+    use AMLutils
+    call MpiWakeQuietWait
+   end  subroutine healpix_wakeMPI
+    
 #ifdef MPIPIX
 
   subroutine MessageLoop(H)
@@ -7386,9 +7699,7 @@ subroutine PackTEB2TEB(almin,almout, nlmax)
     COMPLEX(SPC),   DIMENSION(1,1,1)  :: dummyalm
     Type (HealpixMapArray) :: dummymaps(1)
     Type(HealpixPackedScalAlms) :: dummyscalalms
-    Type(HealpixPackedAlms) :: dummyalms
-    
-  
+    Type(HealpixPackedAlms) :: dummyalms     
     integer i
 
      do
@@ -7398,7 +7709,9 @@ subroutine PackTEB2TEB(almin,almout, nlmax)
       if (DebugMsgs>1) print *,'Got message ', H%MpiId, ' '//trim(Msg)
 
       if (Msg=='EXIT') return
-      if (Msg == 'SCALALM2MAP') then
+      if (Msg == 'WAIT') then
+          call healpix_sleepMPI(H)
+      else if (Msg == 'SCALALM2MAP') then
          call scalalm2map(H,i,dummyalm, dummymap)
       else if (Msg == 'ALM2GRADIENTMAP') then
          call alm2GradientMap(H, i , dummyalm, dummymapC)
@@ -7427,9 +7740,9 @@ subroutine PackTEB2TEB(almin,almout, nlmax)
        else if (Msg=='ALM2LENSEDQUADCONTRIB') then
           call alm2LensedQuadContrib(H, i, dummyalm, dummymapC, dummymap)
       else if (Msg=='MAPARRAY2PACKEDSCALALMS') then
-          call  maparray2packedscalalms(H,i, dummymaps, dummyscalalms, 1)
+          call  maparray2packedscalalms(H,i, dummymaps, dummyscalalms, 1, .false.)
       else if (Msg=='MAPARRAY2PACKEDPOLALMS') then
-          call  maparray2packedpolalms(H,i, dummymaps, dummyalms, 1)
+          call  maparray2packedpolalms(H,i, dummymaps, dummyalms, 1, .false.)
       end if
      end do 
    
