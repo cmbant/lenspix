@@ -1,0 +1,12 @@
+#!/bin/csh -f
+#PBS -N lenspix
+#PBS -l nodes=32:ppn=1
+#PBS -q workq
+#PBS -r n
+
+lamboot
+cd $PBS_O_WORKDIR
+#
+cd /home/antlewis/lenspix
+time mpirun C -O ./simlens params.ini > outfile
+lamhalt
