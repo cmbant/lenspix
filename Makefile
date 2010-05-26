@@ -1,15 +1,17 @@
 #You will need to edit the LAPACKL paths, and edit the options if you are
-#not using intel ifc
+#not using intel ifort
 
-#Intel ifort 8 and mkl 6.1:
-F90C     = mpif77
-FFLAGS =  -O2 -Vaxlib -W0 -WB -fpp -tpp7 -xW -ip -DMPIPIX
-#use these commented lines instead for non-MPI runs
+#Intel. Note heap-arrays needs v10+ of compiler, and avoids Seg Faults for large arrays
+F90C     = mpif90
+FFLAGS = -ip -O3 -fpp -error-limit 5 -DMPIPIX -heap-arrays
+#use these lines instead for non-MPI runs
 #F90C     = ifort
-#FFLAGS =  -O2 -Vaxlib -W0 -WB -fpp
-LAPACKL =  -L/home/antlewis/Healpix_2.00/lib -L/home/antlewis/cfitsio \
-       -I/home/antlewis/Healpix_2.00/include -lhealpix -lcfitsio \
-	-L/opt/intel/mkl/lib/32 -lmkl_lapack -lmkl_ia32 -lguide -lpthread 
+#FFLAGS =  -ip -O3 -fpp -error-limit 5 -heap-arrays
+LAPACKL = -L/usr/local/cfitsio/intel10/64/3.040/lib \
+	 -L/usr/local/healpix/intel10/64/2.01/serial/lib \
+	 -I/usr/local/healpix/intel10/64/2.01/serial/include \
+	-L/usr/local/intel/mkl/9.1/lib/em64t \
+	 -lhealpix -lcfitsio -lmkl_lapack -lmkl_em64t -lguide -lpthread 
 
 
 #Digital/Compaq fortran; run with e.g. dmpirun -pf orca.procdist where orca.procdist contains node info
@@ -23,7 +25,7 @@ LAPACKL =  -L/home/antlewis/Healpix_2.00/lib -L/home/antlewis/cfitsio \
 
 F90FLAGS = $(FFLAGS) $(INCLUDE) $(LAPACKL)
 
-OBJFILES= inifile.o utils.o spin_alm_tools.o \
+OBJFILES= toms760.o inifile.o utils.o spin_alm_tools.o \
    HealpixObj.o HealpixVis.o SimLens.o
 
 .f.o:

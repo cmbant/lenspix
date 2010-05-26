@@ -5,9 +5,12 @@ module HealpixObj
  USE fitstools, ONLY : getsize_fits, input_map, read_par, read_dbintab, write_asctab, &
    dump_alms,write_bintab
  USE spinalm_tools
+ use AMLutils
  implicit none
 
  REAL(SP) :: fmissval = -1.6375e-30
+ real(DP), parameter :: HO_PI = 3.14159265358979323846264338328d0, &
+      HO_twopi=2*HO_pi, HO_fourpi=4*HO_pi
 
  integer, parameter :: ord_ring = 1, ord_nest = 2
 
@@ -80,8 +83,10 @@ contains
      else
        allocate(P%Cl(0:almax,1))  
      end if
+     P%Cl=0
      if (P%lens) then
       allocate(P%PhiCl(0:almax,2))      
+      P%PhiCl = 0
      end if
 
    end subroutine HealpixPower_Init
@@ -185,15 +190,33 @@ contains
      call CreateTxtFile(fname,1)
      do l=0,P%lmax
        if (P%pol) then
-         write (1,'(1I7,4E15.5)') l,l*(l+1)*P%Cl(l,:)/twopi *1e6
+         write (1,'(1I7,4E17.7)') l,l*(l+1)*P%Cl(l,:)/twopi *1e6
        else
-         write (1,'(1I7,1E15.5)') l,l*(l+1)*P%Cl(l,1)/twopi *1e6
+         write (1,'(1I7,1E17.7)') l,l*(l+1)*P%Cl(l,1)/twopi *1e6
        end if
      end do
 
      close(1)
 
    end  subroutine HealpixPower_Write
+
+
+   subroutine HealpixPower_AddPower(Ptotal, P, AddPhi)
+    !Adds P to PTotal (useful for getting means over realisations). 
+    Type(HealpixPower) P, Ptotal
+    logical, intent(in) :: AddPhi
+      
+
+     if (all(shape(P%Cl) /= shape(Ptotal%Cl))) &
+         stop 'HealpixPower_AddPower: must have same sized power spectra' 
+     Ptotal%Cl = Ptotal%Cl + P%Cl
+     if (AddPhi) then
+       if (.not. PTotal%lens  .or. .not. P%lens) stop 'HealpixPower_AddPower: must both have phi'
+       Ptotal%PhiCl = PTotal%phiCl + P%PhiCl 
+     end if
+
+   end subroutine HealpixPower_AddPower
+
 
   subroutine HealpixPower_Smooth(P,fwhm, sgn)
    Type(Healpixpower) :: P
@@ -207,7 +230,7 @@ contains
     sn = -1
    end if
    
-   xlc= 180*sqrt(8.*log(2.))/3.14159
+   xlc= 180*sqrt(8.*log(2.))/HO_pi
    sigma2 = (fwhm/xlc)**2
 
    do l=2,P%lmax
@@ -215,6 +238,8 @@ contains
    end do
 
   end subroutine HealpixPower_Smooth
+
+
 
    subroutine HealpixAlm2Power(A,P)
     Type(HealpixPower) P
@@ -250,8 +275,6 @@ contains
      integer, intent(in), optional :: npol, spinmap
      logical, intent(in), optional :: HasPhi
      integer status
-
-    if (almax > 3000) stop 'HealpixAlm_Init: Not sure can handle that large l_max!'
 
      call HealpixAlm_Free(A)
 
@@ -313,7 +336,7 @@ contains
    end if
    if (AIn%HasPhi) then
        ALLOCATE(AOut%Phi(1:1,0:AOut%lmax, 0:AOut%lmax),stat = status)
-      if (status /= 0) stop 'No Mem: HealpixMap_Assign'
+      if (status /= 0) stop 'No Mem: HealpixAlm_Assign'
       AOut%Phi = Ain%Phi   
    end if 
   
@@ -430,7 +453,7 @@ contains
    else
      sn = -1
    end if
-   xlc= 180*sqrt(8.*log(2.))/3.14159
+   xlc= 180*sqrt(8.*log(2.))/HO_pi
    sigma2 = (fwhm/xlc)**2
 
    do l=2,A%lmax
@@ -459,7 +482,7 @@ contains
     integer, intent(in) :: npix
     integer, dimension(:), allocatable :: listpix
     real(dp), intent(in) :: vec(3)
-    integer nlist,i
+    integer nlist
   
     call HealpixMap_Init(M,npix,1)
     allocate(listpix(0:npix-1))
@@ -557,7 +580,6 @@ contains
    use pix_tools
     Type(HealpixMap) :: M, MR
     real(dp), intent(in) :: theta, phi, chi 
-    real(dp) t,p
     integer i, ix
     real(dp) vec(3), R(3,3)
 
@@ -574,6 +596,58 @@ contains
 
   end subroutine HealpixMap_Rotate
 
+ 
+  subroutine HealpixMap_AddWhiteNoise(M, N_T, N_QU )
+  !N_T and N_QU are the N_l of the noise (in mK)
+    use Random
+    Type(HealpixMap) :: M
+    real(sp), intent(in) :: N_T
+    real(sp), intent(in), optional :: N_QU
+    real(sp) amp
+    integer i
+         
+    amp = sqrt(N_T*M%npix/(HO_fourpi))
+    do i=0, M%npix-1
+     M%TQU(i,1)= M%TQU(i,1) + Gaussian1()*amp
+    end do
+  
+    if (present(N_QU) .and. M%nmaps>1) then
+        if (M%nmaps /= 3) stop 'HealpixMap_AddWhiteNoise: No polarization in map'
+        amp = sqrt(N_QU*M%npix/HO_fourpi)
+        do i=0, M%npix-1
+         M%TQU(i,2)= M%TQU(i,2) + Gaussian1()*amp
+        end do
+        do i=0, M%npix-1
+         M%TQU(i,3)= M%TQU(i,3) + Gaussian1()*amp
+        end do
+    end if
+    
+  end  subroutine HealpixMap_AddWhiteNoise
+
+  subroutine HealpixMap_AddUncorrelatedNoise(M, NoiseMap)
+    use Random
+    Type(HealpixMap) :: M, NoiseMap
+    real(sp) amp
+    integer i
+         
+    do i=0, M%npix-1
+     M%TQU(i,1)= M%TQU(i,1) + Gaussian1()*sqrt(NoiseMap%TQU(i,1))
+    end do
+  
+    if (M%nmaps>1) then
+        if (M%nmaps /= 3) stop 'HealpixMap_AddUncorrelatedNoise: No polarization in map'
+        if (NoiseMap%nmaps /= 3) stop 'HealpixMap_AddUncorrelatedNoise: No polarization in noise map'
+        do i=0, M%npix-1
+         M%TQU(i,2)= M%TQU(i,2) + Gaussian1()*sqrt(NoiseMap%TQU(i,2))
+        end do
+        do i=0, M%npix-1
+         M%TQU(i,3)= M%TQU(i,3) + Gaussian1()*sqrt(NoiseMap%TQU(i,3))
+        end do
+    end if
+    
+  end  subroutine HealpixMap_AddUncorrelatedNoise
+
+
   subroutine HealpixAlm_Sim(A, P, seed, HasPhi, dopol)
    use random
    use alm_tools
@@ -585,7 +659,8 @@ contains
    integer l,m
    logical wantphi
    integer wantpol
-   real(sp) xamp, corr, tamp, Bamp
+   real(sp) xamp, corr, tamp, Bamp, Examp
+   complex(sp) g
 
    if (present(seed)) then
       call InitRandom(seed)
@@ -617,8 +692,9 @@ contains
        A%TEB(1,l,m) =cmplx(Gaussian1(),Gaussian1())*tamp
       end do 
    end do
-
-    if (wantpol >= 3) then  
+   if (wantphi) A%Phi=0
+     
+   if (wantpol >= 3) then  
       !polarization, E corrolated to T
 
       do l = 2, P%lmax 
@@ -630,21 +706,26 @@ contains
         corr = p%cl(l,C_C)/tamp
         xamp = sqrt(P%cl(l,C_E) - corr*P%cl(l,C_C))
         Bamp = sqrt(P%cl(l,C_B))
-        A%TEB(2,l,0) = Corr*A%TEB(1,l,0) + Gaussian1()*xamp
+        g = Gaussian1()
+        if (wantphi) A%Phi(1,l,0) = g 
+        A%TEB(2,l,0) = Corr*A%TEB(1,l,0) + real(g)*xamp
         A%TEB(3,l,0)=  Bamp*Gaussian1()
         xamp = xamp / sqrt(2.0)
         Bamp = Bamp /sqrt(2.0)
         do m =1, l
-          A%TEB(2,l,m) = corr*A%TEB(1,l,m) + cmplx(Gaussian1(),Gaussian1())*xamp
-          A%TEB(3,l,m) = Bamp*cmplx(Gaussian1(),Gaussian1())      
+          g = cmplx(Gaussian1(),Gaussian1())
+          A%TEB(2,l,m) = corr*A%TEB(1,l,m) + g*xamp
+          A%TEB(3,l,m) = Bamp*cmplx(Gaussian1(),Gaussian1())     
+          if (wantphi) A%Phi(1,l,m) = g 
         end do
 
       end do
 
     end if 
    if (wantphi) then
-     !Make phi with correct correlation to T
-     A%Phi=0
+     !Make phi with correct correlation to T, assume E-phi correlation is zero
+     !AL: Oct 07: fixed so we don't introduce spurious E-phi correlation
+     !Pointed out by Perotto, arXiv:astro-ph/0606227 
      do l=2, P%lmax
       if (P%Cl(l,1)==0) then
         tamp = 1.0
@@ -652,11 +733,19 @@ contains
         tamp=P%Cl(l,1)
       end if
       corr = P%PhiCl(l,2)/tamp
-      xamp = sqrt(max(0._sp,P%PhiCl(l,1) - corr*P%PhiCl(l,2)))
-      A%Phi(1,l,0) = corr*A%TEB(1,l,0) + Gaussian1()*xamp
+      if (wantpol >=3) then
+       Examp = corr*P%cl(l,C_C)*sqrt( tamp/(p%cl(l,C_E)*tamp - p%cl(l,C_C)**2))
+       xamp = sqrt(max(0._sp, P%PhiCl(l,1) - corr*P%PhiCl(l,2) - Examp**2 ))
+       A%Phi(1,l,0) =  -Examp * A%Phi(1,l,0)
+       Examp = Examp/sqrt(2.0)
+      else
+        xamp = sqrt(max(0._sp,P%PhiCl(l,1) - corr*P%PhiCl(l,2)))
+      end if        
+      A%Phi(1,l,0) = A%Phi(1,l,0) + corr*A%TEB(1,l,0) + Gaussian1()*xamp
       xamp=  xamp/sqrt(2.0)
       do m = 1, l
-        A%Phi(1,l,m) = corr*A%TEB(1,l,m) + cmplx(Gaussian1(),Gaussian1())*xamp
+        if (wantpol >=3) A%Phi(1,l,m) =  -Examp * A%Phi(1,l,m) 
+        A%Phi(1,l,m) = A%Phi(1,l,m) + corr*A%TEB(1,l,m) + cmplx(Gaussian1(),Gaussian1())*xamp
       end do
      end do 
 
@@ -824,7 +913,6 @@ contains
   subroutine HealpixMap_Read(OutMAP,fname)
    CHARACTER(LEN=80), DIMENSION(1:120) :: header_in
    character(LEN=*), intent(in) :: fname
-   integer status, j
    
    Type(HealpixMap) OutMap 
 
@@ -862,7 +950,7 @@ contains
     Type(HealpixMap), intent(in) :: M
     character(LEN=*), intent(in) :: fname
     CHARACTER(LEN=80), DIMENSION(1:120) :: header
-    integer j, nlheader
+    integer nlheader
 
     header = ' '
     call add_card(header,'COMMENT','-----------------------------------------------')
@@ -995,7 +1083,9 @@ contains
    else
 
     do i=1,InMap%nmaps
-     OutMap%TQU(:,i) = InMap%TQU(:,i) * CutMap%TQU(:,ix)
+     do j=0, InMap%npix -1
+     OutMap%TQU(j,i) = InMap%TQU(j,i) * CutMap%TQU(j,ix)
+     end do
     end do
 
    end if
@@ -1038,7 +1128,7 @@ contains
      if (M%nmaps ==0) npol = 0
 
      if (present(theta_cut_deg)) then
-       cos_theta_cut =  SIN(theta_cut_deg/180.d0*3.14159265358)
+       cos_theta_cut =  SIN(theta_cut_deg/180.d0*HO_pi)
        if (theta_cut_deg < 0) cos_theta_cut = -1
       else
        cos_theta_cut = -1
@@ -1110,40 +1200,58 @@ contains
      call HealpixMap_Init(M,GradPhi%npix,nmaps = A%npol)
      if (GradPhi%spin /=1) stop 'HealpixExactLensedMap: GradPhi must be spin 1 field'
      if (A%npol ==1) then
-      call scalalm2LensedMap(H, A%lmax, A%TEB, GradPhi%SpinField, M%TQU)
+      call scalalm2LensedMap(H, A%lmax, A%TEB, GradPhi%SpinField, M%TQU(:,1))
      else
       call alm2LensedMap(H, A%lmax, A%TEB, GradPhi%SpinField, M%TQU)
      end if
   end subroutine  HealpixExactLensedMap_GradPhi
 
-  subroutine  HealpixInterpLensedMap(H,A, M, npix, factor)
+  subroutine  HealpixInterpLensedMap(H,A, M, npix, factor, interp_method)
      Type (HealpixInfo) :: H
      Type(HealpixMap) :: GradPhi, M
      integer, intent(in) :: npix
      Type(HealpixAlm), intent(in) :: A
-     integer, intent(in), optional :: factor
-     integer fact
-
-     fact = 8 !sufficient for 0.5% accuracy to l=2000
+     real, intent(in), optional :: factor
+     integer, intent(in), optional :: interp_method
+     real fact
+     integer method
+     
+     fact = 8. !sufficient for 0.5% accuracy to l=2000
      if (present(factor)) fact = factor
+     
+     method = interp_basic
+     if (present(interp_method)) method = interp_method
+     
      call HealpixAlm2GradientMap(H,A,GradPhi,npix,'PHI')
-     call HealpixInterpLensedMap_GradPhi(H,A, GradPhi,M, fact)
+     call HealpixInterpLensedMap_GradPhi(H,A, GradPhi,M, fact, interp_method)
      call HealpixMap_Free(GradPhi)
 
   end subroutine  HealpixInterpLensedMap
 
-  subroutine  HealpixInterpLensedMap_GradPhi(H,A, GradPhi,M, factor)
+  subroutine  HealpixInterpLensedMap_GradPhi(H,A, GradPhi,M, factor, interp_method)
      Type (HealpixInfo) :: H
      Type(HealpixMap) :: GradPhi, M
      Type(HealpixAlm), intent(in) :: A
-     integer, intent(in) :: factor
+     real, intent(in) :: factor
+     integer, intent(in) :: interp_method
       
      call HealpixMap_Init(M,GradPhi%npix,nmaps = A%npol)
      if (GradPhi%spin /=1) stop 'HealpixExactLensedMap: GradPhi must be spin 1 field'
+     if (interp_method==interp_basic) then
+       if ( abs(factor - nint(factor)) > 1e-4) stop 'interp_factor must be 2^n for interp_basic'
+     end if
      if (A%npol ==1) then
-      stop 'HealpixInterpLensedMap_GradPhi: currently only with pol'
+      if (interp_method==interp_basic) then
+       call scalalm2LensedmapInterp(H, A%lmax, A%TEB, GradPhi%SpinField, M%TQU, nint(factor))
+      else
+       call scalalm2LensedmapInterpCyl(H, A%lmax, A%TEB, GradPhi%SpinField, M%TQU, factor)
+      end if 
      else
-      call alm2LensedmapInterp(H, A%lmax, A%TEB, GradPhi%SpinField, M%TQU, factor)
+      if (interp_method==interp_basic) then
+       call alm2LensedmapInterp(H, A%lmax, A%TEB, GradPhi%SpinField, M%TQU, nint(factor))
+      else
+       call alm2LensedmapInterpCyl(H, A%lmax, A%TEB, GradPhi%SpinField, M%TQU, factor)
+      end if
      end if
   end subroutine  HealpixInterpLensedMap_GradPhi
 
@@ -1235,7 +1343,6 @@ contains
   subroutine HealpixMap_Spin2FieldTopol(M, delspin)
       Type(HealpixMap) :: M
       logical, intent(in), optional :: delspin
-      integer status
 
        if (M%nmaps==0) then
          call HealpixMap_AllocateTQU(M,3) 
@@ -1252,6 +1359,21 @@ contains
   end  subroutine HealpixMap_Spin2FieldToPol
 
 
+ subroutine HealpixMap_SetToIndexOnly(M, ix)
+    Type(HealpixMap) :: M
+    integer, intent(in) :: ix
+    REAL(SP), DIMENSION(:,:), allocatable :: TQU
+    
+    if (M%nmaps < ix) call MpiStop('HealpixMap_SetToIndexOnly: index out of bounds')
+    M%nmaps =1
+    allocate(TQU(0:M%npix-1,1))
+    TQU(:,1) = M%TQU(:,ix)
+    call HealpixMap_AllocateTQU(M,1) 
+    M%TQU = TQU
+    deallocate(TQU)
+    
+ end subroutine HealpixMap_SetToIndexOnly
+ 
   subroutine HealpixMap_udgrade(M, Mout, nside_out, pessimistic)
      use udgrade_nr
      Type(HealpixMap) :: M, Mout
@@ -1266,13 +1388,15 @@ contains
     else
       pess = .false.
     end if
-
+    if (nside_out== M%nside) then
+     call HealpixMap_Assign(Mout, M)
+    else
     call HealpixMap_ForceNest(M)
     call HealpixMap_Init(Mout,nside2npix(nside_out), M%nmaps, nested=.true.)
      do i=1, M%nmaps
        call sub_udgrade_nest(M%TQU(:,i),M%nside,MOut%TQU(:,i),nside_out, fmissval, pess)
     end do
-
+    end if
   end subroutine HealpixMap_udgrade
 
   subroutine HealpixMap_HaarTransform(M,Mdegrade,Mdetail)
@@ -1335,7 +1459,7 @@ contains
 
   subroutine HaarComponents_Free(C) 
     Type(HaarComponents) :: C
-    integer i, status
+    integer i
 
     if (associated(C%details)) then
      do i=1, C%order
@@ -1415,7 +1539,7 @@ contains
   subroutine HealpixMap_HarrPowerSpec(C, P)
    Type(HaarComponents) :: C
    real(dp) P(C%order)
-   integer i, pix
+   integer i
 
    if (C%degraded%nmaps /= 1) stop 'Only does power spectra for single map'
    do i=1, C%order

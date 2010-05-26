@@ -1,0 +1,65 @@
+#!/bin/bash 
+#!
+#! Sample PBS file for an InfiniPath MPI job
+#!
+### EDIT TO SET CORRECT PATHS
+
+
+#! Name of job
+#PBS -N lenspix
+
+#! First entry: Number of nodes:cores per node.
+#!  The total number of tasks passed to mpirun will be nodes*ppn.
+#! Second entry: Total amount of memory requested across all nodes.
+#!  Divide this by the number of nodes to get the memory requested per node.
+#!  NB most nodes have no more than 7972mb available in practice.
+#! Third entry: Total amount of wall-clock time (true time) required.
+#!  02:00:00 indicates 02 hours.
+
+#PBS -l nodes=2:ppn=4
+
+##,mem=63776mb,walltime=02:00:00
+
+#! Mail to user when job terminates or aborts
+###PBS -m ae
+
+
+#! Full path to application + application name
+application=./simlens
+
+#! Run options for the application
+options=params.ini
+
+#! Work directory
+workdir=./
+
+#! MPIrun
+runmpi=/usr/local/openmpi/intel10/64/1.2.2/bin/mpirun
+
+
+###############################################################
+### You should not have to change anything below this line ####
+###############################################################
+
+#! change the working directory (default is home directory)
+
+cd $workdir
+
+echo Running on host `hostname`
+echo Time is `date`
+echo Directory is `pwd`
+echo PBS job ID is $PBS_JOBID
+echo This jobs runs on the following machines:
+echo `cat $PBS_NODEFILE | uniq`
+ 
+#! Create a machine file for MPI
+cat $PBS_NODEFILE | uniq > machine.file.$PBS_JOBID
+
+numnodes=`wc $PBS_NODEFILE | awk '{ print $1 }'`
+
+#! Run the parallel MPI executable (nodes*ppn)
+
+echo "Running mpirun -np $numnodes -machinefile machine.file.$PBS_JOBID $application $options"
+time $runmpi $application $options
+
+##$runmpi  -np $numnodes -machinefile machine.file.$PBS_JOBID $application $options

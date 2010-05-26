@@ -3,7 +3,7 @@ module HealpixVis
  !Visualise the sky looking at sphere from the centre
   use HealpixObj  
   use Healpix_Types
-  !use AMLUtils
+ ! use AMLUtils
   implicit none
 
   ! visualisation PPM type
@@ -98,7 +98,7 @@ contains
     character(LEN=*), intent(in), optional :: projection
     character proj
     integer plotopt
-    integer poll,nn, nyy,nxx
+    integer nn, nyy,nxx
     real(SP), dimension(:), allocatable :: AmpArr
 
     if (present(plot)) then
@@ -241,12 +241,12 @@ contains
     pol =1
     end if
    do ix = 0, nframes*2-2 
-    ang = ix*twopi/float(nframes-1)
+    ang = ix*HO_twopi/float(nframes-1)
  
     if (ix <= nframes-1) then 
       call Healpix_GetRotation(R, ang, 0.d0, 0.d0)
     else
-      call Healpix_GetRotation(R, ang-twopi,pi/2,0.d0)
+      call Healpix_GetRotation(R, ang-HO_twopi,HO_pi/2,0.d0)
     end if
 !    call HealpixVis_map2ppm2(M,ppm,HealpixVis_proj_orth,1,400,400, R, mapix = pol)
      write (frame,"(I4.4)") ix
@@ -295,22 +295,19 @@ contains
     type(HealpixMap), intent(in) :: M
     character(len=*), intent(in) :: fname
     type(HealpixMap) degraded
-    real :: maprange, mapmin, value, n2
+    real ::  n2
     real(dp) :: theta, phi
     integer :: i, j, k, l, xsize, ysize, nxx, nyy
     integer, intent(in) :: n
     real :: x, y, xbase, ybase, xpix, ypix, xsubpix, ysubpix
-    real :: colour(3)
-    real(sp), dimension(:), pointer :: PPix
-    real(dp) vec(3), vx,vy, ang, len
+    real(dp) vx,vy, ang, len
     integer :: pnum
     logical :: novec, inmap
-    type(HealpixCMap) :: cmap
     complex(dp) av
 
 
     open(1, file=fname, action='write', status='replace',form='formatted')
-    write (1,'(1I6)') M%spin
+   ! write (1,3'(1I6)') M%spin
      
     xsize = nxx
     ysize = nyy
@@ -496,9 +493,9 @@ contains
 
     stop 'need to check phi sign'
     inmap = .true.
-    phi = x*pi
-    if (phi < 0.0_dp) phi = phi + twopi 
-    theta = (1.0_dp-y) * pi/2.0_dp
+    phi = x*HO_pi
+    if (phi < 0.0_dp) phi = phi + HO_twopi 
+    theta = (1.0_dp-y) * HO_pi/2.0_dp
 
   end subroutine HealpixVis_proj_ecp
 
@@ -540,8 +537,8 @@ contains
     stop 'need to check phi sign'
 
     inmap = .true.
-    phi = x*pi
-    if (phi < 0.0_dp) phi = phi + twopi
+    phi = x*HO_pi
+    if (phi < 0.0_dp) phi = phi + HO_twopi
     theta = acos(real(y,dp))
 
   end subroutine HealpixVis_proj_cyl
@@ -559,14 +556,14 @@ contains
 
     stop 'need to check phi sign'
 
-    theta = (1.0_dp-y) * pi/2.0_dp
+    theta = (1.0_dp-y) * HO_pi/2.0_dp
     snth = sin(theta)
     if (abs(x) > snth) then
       inmap = .false.
     else
       inmap = .true.
-      phi = x*pi/snth
-      if (phi < 0.0) phi = phi + twopi
+      phi = x*HO_pi/snth
+      if (phi < 0.0) phi = phi + HO_twopi
     end if
 
   end subroutine HealpixVis_proj_sin
@@ -589,9 +586,9 @@ contains
       inmap = .false.
     else
       inmap = .true.
-      theta = pi/2.0 - asin((2.0*td+sin(2.0*td))/pi)
-      phi = - x * pi/csth
-      if (phi < 0.0) phi = phi + twopi
+      theta = HO_pi/2.0 - asin((2.0*td+sin(2.0*td))/HO_pi)
+      phi = - x * HO_pi/csth
+      if (phi < 0.0) phi = phi + HO_twopi
     end if
 
   end subroutine HealpixVis_proj_mol

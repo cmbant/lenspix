@@ -1,8 +1,451 @@
 !Module of useful routines and definitions
+    !April 2006: fix to TList_RealArr_Thin
+
+
+ module Ranges
+ !A collection of ranges, consisting of sections of minimum step size
+  implicit none
+
+  integer, parameter :: Max_Ranges = 100
+  double precision, parameter :: RangeTol = 0.1d0 
+    !fraction of bin width we are prepared for merged bin widths to increase by
+
+  Type Region
+    integer start_index
+    integer steps
+    logical :: IsLog
+    double precision Low, High
+    double precision delta
+    double precision delta_max, delta_min !for log spacing, the non-log max and min step size
+  end Type Region
+
+  Type Regions
+    
+     integer count
+     integer npoints
+     double precision Lowest, Highest
+     Type(Region) :: R(Max_ranges)
+     logical :: has_dpoints
+     double precision, dimension(:), pointer :: points, dpoints
+       !dpoints is (points(i+1)-points(i-1))/2
+ 
+  end Type Regions
+
+ contains
+  
+   subroutine Ranges_Init(R)
+    Type(Regions) R
+
+     call Ranges_Free(R)
+    
+   end  subroutine Ranges_Init
+
+   subroutine Ranges_Free(R)
+    Type(Regions) R
+    integer status     
+
+     deallocate(R%points,R%dpoints,stat = status)
+     nullify(R%points)
+     nullify(R%dpoints)
+     R%count = 0
+     R%npoints = 0
+     R%has_dpoints = .false.
+    
+   end  subroutine Ranges_Free
+
+
+   function Ranges_IndexOf(Reg, tau) result(pointstep)
+      Type(Regions), intent(in), target :: Reg
+      Type(Region), pointer :: AReg
+      double precision :: tau
+      integer pointstep
+      integer i
+
+      
+      pointstep=0
+      do i=1,Reg%count
+          AReg => Reg%R(i)
+
+          if (tau < AReg%High .and. tau >= AReg%Low) then
+             if (AReg%IsLog) then
+              pointstep = AReg%start_index + int( log(tau/AReg%Low)/AReg%delta)
+              else
+              pointstep = AReg%start_index + int(( tau - AReg%Low)/AReg%delta)
+             end if
+             return
+          end if
+
+      end do
+
+      if (tau >= Reg%Highest) then
+         pointstep = Reg%npoints
+      else
+       write (*,*) 'Ranges_IndexOf: value out of range'
+       stop 
+      end if
+
+   end function Ranges_IndexOf
+
+     
+   subroutine Ranges_GetArray(Reg, want_dpoints)
+     Type(Regions), target :: Reg
+     Type(Region), pointer :: AReg
+     logical, intent(in), optional :: want_dpoints 
+     integer status,i,j,ix     
+     
+
+     if (present(want_dpoints)) then
+      Reg%has_dpoints = want_dpoints
+     else
+      Reg%has_dpoints = .true.
+     end if
+
+     deallocate(Reg%points,stat = status)
+     allocate(Reg%points(Reg%npoints)) 
+
+     ix=0   
+     do i=1, Reg%count
+       AReg => Reg%R(i)
+       do j = 0, AReg%steps-1
+        ix=ix+1
+        if (AReg%IsLog) then
+         Reg%points(ix) = AReg%Low*exp(j*AReg%delta)
+        else
+         Reg%points(ix) = AReg%Low + AReg%delta*j
+        end if
+       end do
+     end do
+     ix =ix+1
+     Reg%points(ix) = Reg%Highest
+     if (ix /= Reg%npoints) stop 'Ranges_GetArray: ERROR'
+
+     if (Reg%has_dpoints) call Ranges_Getdpoints(Reg)
+
+   end subroutine Ranges_GetArray
+
+
+   subroutine Ranges_Getdpoints(Reg)
+      Type(Regions), target :: Reg
+      integer i, status
+       
+      deallocate(Reg%dpoints,stat = status)
+      allocate(Reg%dpoints(Reg%npoints)) 
+
+      Reg%dpoints(1) = (Reg%points(2) - Reg%points(1))/2
+      do i=2, Reg%npoints-1
+        Reg%dpoints(i) = (Reg%points(i+1) - Reg%points(i-1))/2
+      end do
+      Reg%dpoints(Reg%npoints) = (Reg%points(Reg%npoints) - Reg%points(Reg%npoints-1))/2
+
+   end subroutine Ranges_Getdpoints
+
+
+   subroutine Ranges_Add_delta(Reg, t_start, t_end, t_approx_delta, IsLog)
+     Type(Regions), target :: Reg
+     logical, intent(in), optional :: IsLog
+     double precision, intent(in) :: t_start, t_end, t_approx_delta
+     integer n
+     logical :: WantLog
+
+     if (present(IsLog)) then
+        WantLog = IsLog      
+     else
+        WantLog = .false.    
+     end if
+     
+     if (t_end <= t_start) & 
+       stop 'Ranges_Add_delta: end must be larger than start'
+     if (t_approx_delta <=0) stop 'Ranges_Add_delta: delta must be > 0'
+
+     if (WantLog) then
+      n  = max(1,int(log(t_end/t_start)/t_approx_delta + 1.d0 - RangeTol))
+     else
+      n  = max(1,int((t_end-t_start)/t_approx_delta + 1.d0 - RangeTol))
+     end if
+     call Ranges_Add(Reg,t_start, t_end, n, WantLog)
+       
+   end subroutine Ranges_Add_delta
+
+
+   subroutine Ranges_Add(Reg, t_start, t_end, nstep, IsLog)
+     Type(Regions), target :: Reg
+     logical, intent(in), optional :: IsLog
+     double precision, intent(in) :: t_start, t_end
+     integer, intent(in) :: nstep
+     Type(Region), pointer :: AReg, LastReg
+     Type(Region), target :: NewRegions(Max_Ranges)
+     double precision EndPoints(0:Max_Ranges*2)
+     integer ixin, nreg, ix, i,j, nsteps
+     double precision delta
+     logical WantLog
+     double precision min_request, max_request, min_log_step, max_log_step, diff, max_delta
+     double precision RequestDelta(Max_Ranges)
+
+     if (present(IsLog)) then
+      WantLog = IsLog
+     else
+      WantLog = .false.
+     end if
+
+     if (WantLog) then
+      delta = log(t_end/t_start) / nstep
+     else
+      delta = (t_end - t_start) / nstep
+     end if
+
+     if (t_end <= t_start) stop 'Ranges_Add: end must be larger than start'
+     if (nstep <=0) stop 'Ranges_Add: nstep must be > 0'
+     if (Reg%Count>= Max_Ranges) stop 'Ranges_Add: Incrsase Max_Ranges'
+     
+     if (Reg%count > 0) NewRegions(1:Reg%count) = Reg%R(1:Reg%count)
+     nreg = Reg%count + 1
+     AReg=> NewRegions(nreg)
+     AReg%Low = t_start
+     AReg%High = t_end
+     AReg%delta = delta
+     AReg%steps = nstep
+     AReg%IsLog = WantLog 
+
+!Get end point in order
+     ix = 0
+     do i=1, nreg
+
+       AReg => NewRegions(i)
+       if (ix==0) then
+          ix = 1
+          EndPoints(ix) = AReg%Low
+          ix = 2
+          EndPoints(ix) = AReg%High
+       else
+        ixin = ix
+        do j=1,ixin
+         if (AReg%Low < EndPoints(j)) then
+           EndPoints(j+1:ix+1) = EndPoints(j:ix)
+           EndPoints(j) = AReg%Low
+           ix=ix+1
+           exit
+         end if
+        end do
+        if (ixin == ix) then
+          ix = ix+1
+          EndPoints(ix) = AReg%Low
+          ix = ix+1
+          EndPoints(ix) = AReg%High
+        else
+            ixin = ix
+            do j=1,ixin
+             if (AReg%High < EndPoints(j)) then
+               EndPoints(j+1:ix+1) = EndPoints(j:ix)
+               EndPoints(j) = AReg%High
+               ix=ix+1
+               exit
+             end if
+            end do
+            if (ixin == ix) then
+              ix = ix+1
+              EndPoints(ix) = AReg%High
+            end if
+                  
+        end if
+       end if
+
+     end do
+
+!remove duplicate points
+     ixin = ix
+     ix = 1
+     do i=2, ixin
+       if (EndPoints(i) /= EndPoints(ix)) then
+        ix=ix+1
+        EndPoints(ix) = EndPoints(i)
+       end if
+     end do
+    
+
+!ix is the number of end points
+     Reg%Lowest = EndPoints(1)
+     Reg%Highest = EndPoints(ix)
+     Reg%count = 0
+
+     max_delta = Reg%Highest - Reg%Lowest
+
+     do i=1, ix - 1
+          AReg => Reg%R(i)
+          AReg%Low = EndPoints(i)
+          AReg%High = EndPoints(i+1)
+          
+!          max_delta = EndPoints(i+1) - EndPoints(i)
+          delta = max_delta
+          AReg%IsLog = .false.
+
+          do j=1, nreg
+           if (AReg%Low >= NewRegions(j)%Low .and. Areg%Low < NewRegions(j)%High) then
+             if (NewRegions(j)%IsLog) then
+                if (AReg%IsLog) then
+                 delta = min(delta,NewRegions(j)%delta) 
+                else
+                 min_log_step = AReg%Low*(exp(NewRegions(j)%delta)-1)
+                 if (min_log_step < delta) then
+                   max_log_step = AReg%High*(1-exp(-NewRegions(j)%delta)) 
+                   if  (delta < max_log_step) then
+                     delta = min_log_step
+                   else
+                     AReg%IsLog = .true.
+                     delta = NewRegions(j)%delta 
+                   end if 
+                 end if
+                end if
+             else !NewRegion is not log
+              if (AReg%IsLog) then
+                max_log_step = AReg%High*(1-exp(-delta)) 
+                if (NewRegions(j)%delta < max_log_step) then
+                  min_log_step = AReg%Low*(exp(delta)-1)
+                  if (min_log_step <  NewRegions(j)%delta) then
+                     AReg%IsLog = .false.
+                     delta =  min_log_step
+                  else
+                     delta = - log(1- NewRegions(j)%delta/AReg%High)
+                  end if
+                end if
+              else
+               delta = min(delta, NewRegions(j)%delta)  
+              end if
+             end if
+           end if
+          end do
+
+         if (AReg%IsLog) then
+           Diff = log(AReg%High/AReg%Low)
+         else
+           Diff = AReg%High - AReg%Low
+         endif
+         if (delta >= Diff) then
+           AReg%delta = Diff
+           AReg%steps = 1
+         else    
+           AReg%steps  = max(1,int(Diff/delta + 1.d0 - RangeTol))
+           AReg%delta = Diff / AReg%steps
+         end if
+
+         Reg%count = Reg%count + 1
+         RequestDelta(Reg%Count) = delta
+
+         if (AReg%IsLog) then
+          if (AReg%steps ==1) then
+           AReg%Delta_min = AReg%High - AReg%Low
+           AReg%Delta_max = AReg%Delta_min
+          else
+           AReg%Delta_min = AReg%Low*(exp(AReg%delta)-1)
+           AReg%Delta_max = AReg%High*(1-exp(-AReg%delta))
+          end if
+         else
+           AReg%Delta_max = AReg%delta
+           AReg%Delta_min = AReg%delta
+         end if
+     end do
+
+
+!Get rid of tiny regions
+     ix = Reg%Count
+     do i=ix, 1, -1  
+         AReg => Reg%R(i)
+         if (AReg%steps ==1) then
+              Diff = AReg%High - AReg%Low
+              if (AReg%IsLog) then
+               min_request = AReg%Low*(exp(RequestDelta(i))-1)
+               max_request = AReg%High*(1-exp(-RequestDelta(i)))
+              else
+               min_request = RequestDelta(i)
+               max_request = min_request
+              end if
+              if (i/= ix) then
+               LastReg => Reg%R(i+1)
+               if (RequestDelta(i) >= AReg%delta .and. Diff <= LastReg%Delta_min &
+                          .and. LastReg%Delta_min <= max_request) then 
+
+                   LastReg%Low = AReg%Low
+                   if (Diff > LastReg%Delta_min*RangeTol) then
+                      LastReg%steps =  LastReg%steps + 1
+                   end if
+                   if (LastReg%IsLog) then
+                      LastReg%delta = log(LastReg%High/LastReg%Low) / LastReg%steps 
+                   else
+                      LastReg%delta = (LastReg%High -LastReg%Low) / LastReg%steps 
+                   end if
+                   Reg%R(i:Reg%Count-1) = Reg%R(i+1:Reg%Count)
+                   Reg%Count = Reg%Count -1
+                   cycle
+               end if          
+              end if
+              if (i/=1) then
+               LastReg => Reg%R(i-1)
+               if (RequestDelta(i) >= AReg%delta .and. Diff <= LastReg%Delta_max &
+                          .and. LastReg%Delta_max <= min_request) then
+                   LastReg%Low = AReg%Low
+                   if (Diff > LastReg%Delta_max*RangeTol) then
+                      LastReg%steps =  LastReg%steps + 1
+                   end if
+                   if (LastReg%IsLog) then
+                      LastReg%delta = log(LastReg%High/LastReg%Low) / LastReg%steps 
+                   else
+                      LastReg%delta = (LastReg%High -LastReg%Low) / LastReg%steps 
+                   end if
+                   Reg%R(i:Reg%Count-1) = Reg%R(i+1:Reg%Count)
+                   Reg%Count = Reg%Count -1
+               end if
+              end if           
+         end if       
+     end do
+
+
+!Set up start indices and get total number of steps
+    nsteps = 1
+    do i = 1, Reg%Count
+         AReg => Reg%R(i)
+         AReg%Start_index = nsteps
+         nsteps = nsteps + AReg%steps
+         if (AReg%IsLog) then
+          if (AReg%steps ==1) then
+           AReg%Delta_min = AReg%High - AReg%Low
+           AReg%Delta_max = AReg%Delta_min
+          else
+           AReg%Delta_min = AReg%Low*(exp(AReg%delta)-1)
+           AReg%Delta_max = AReg%High*(1-exp(-AReg%delta))
+          end if
+         else
+           AReg%Delta_max = AReg%delta
+           AReg%Delta_min = AReg%delta
+         end if
+    end do
+
+    Reg%npoints = nsteps
+
+   end subroutine Ranges_Add
+
+
+   subroutine Ranges_Write(Reg) 
+      Type(Regions), intent(in), target :: Reg
+      Type(Region), pointer :: AReg
+      integer i
+
+      do i=1,Reg%count
+          AReg => Reg%R(i)
+          if (AReg%IsLog) then
+           Write (*,'("Range ",I3,":", 3E14.4," log")') i, AReg%Low, AReg%High, AReg%delta 
+          else
+           Write (*,'("Range ",I3,":", 3E14.4," linear")') i, AReg%Low, AReg%High, AReg%delta 
+          end if
+      end do
+   end subroutine Ranges_Write
+
+
+ end module Ranges
+
 
  module Lists
   !Currently implements lists of strings and lists of arrays of reals
   implicit none
+
   type real_pointer
     real, dimension(:), pointer :: p
   end type real_pointer
@@ -37,7 +480,7 @@
     
      L%Count = 0
      L%Capacity = 0
-     L%Delta = 64
+     L%Delta = 1024
      nullify(L%items)
 
    end subroutine TList_RealArr_Init
@@ -50,6 +493,7 @@
        deallocate (L%Items(i)%P, stat = status)
      end do
     deallocate (L%Items, stat = status)
+    nullify(L%Items)
     L%Count = 0
     L%Capacity = 0
 
@@ -99,6 +543,35 @@
      
    end subroutine TList_RealArr_Delete
 
+   subroutine TList_RealArr_SaveBinary(L,fid)
+    Type (TList_RealArr) :: L
+    integer, intent(in) :: fid
+    integer i
+     
+      write (fid) L%Count
+      do i=1,L%Count
+       write(fid) size(L%Items(i)%P)
+       write(fid) L%Items(i)%P
+      end do
+
+   end subroutine TList_RealArr_SaveBinary
+
+   subroutine TList_RealArr_ReadBinary(L,fid)
+    Type (TList_RealArr) :: L
+    integer, intent(in) :: fid
+    integer num,i,sz
+     
+      call TList_RealArr_Clear(L) 
+      read (fid) num
+      call TList_RealArr_SetCapacity(L, num)
+      do i=1,num
+       read(fid) sz
+       allocate(L%Items(i)%P(sz))
+       read(fid) L%Items(i)%P
+      end do
+      L%Count = num
+
+   end subroutine TList_RealArr_ReadBinary
 
 
    subroutine TList_RealArr_Thin(L, i)
@@ -110,11 +583,11 @@
     if (L%Count > 1) then
       newCount = (L%Count-1)/i+1
       allocate(TmpItems(newCount))
-      TmpItems = L%Items(1:i:L%Count)
+      TmpItems = L%Items(1:L%Count:i)
       deallocate(L%Items)
       L%Capacity = newCount
       allocate(L%Items(L%Capacity))
-      L%Items(1:i:L%Count) = TmpItems
+      L%Items = TmpItems
       L%Count = newCount
       deallocate(TmpItems)
     end if    
@@ -165,15 +638,14 @@
 
     end subroutine TList_RealArr_ConfidVal
 
-
-
    subroutine TStringList_Init(L)
     Type (TStringList) :: L
     
      L%Count = 0
      L%Capacity = 0
      L%Delta = 128
-
+     nullify(L%items)
+     
    end subroutine TStringList_Init
 
    subroutine TStringList_Clear(L)
@@ -184,23 +656,49 @@
        deallocate (L%Items(i)%P, stat = status)
      end do
     deallocate (L%Items, stat = status)
-    L%Count = 0
-    L%Capacity = 0
+    call TStringList_Init(L)
 
    end subroutine TStringList_Clear
+
+   subroutine TStringList_SetFromString(L, S, valid_chars)
+    Type (TStringList) :: L
+    character(Len=*), intent(in) :: S, valid_chars
+    character(LEN=1024) item
+    integer i,j
+
+     call TStringList_Clear(L)
+     item ='' 
+     j=0
+     do i=1, len_trim(S)
+        if (verify(S(i:i),trim(valid_chars)) == 0) then
+          j=j+1
+          item(j:j) = S(i:i)
+        else
+          if (trim(S(i:i))/='') then
+           write (*,*) 'Invalid character in: '//trim(S)
+          end if 
+          if (j>0) call TStringList_Add(L, item(1:j))
+          j=0
+        end if          
+     end do
+     if (j>0) call TStringList_Add(L, item(1:j))
+   
+   end subroutine TStringList_SetFromString
+
 
     
    subroutine TStringList_Add(L, P)
     Type (TStringList) :: L
     character(LEN=*), intent(in) :: P
-    integer s
+    integer s,i
   
     if (L%Count == L%Capacity) call TStringList_SetCapacity(L, L%Capacity + L%Delta)
     s = len_trim(P)
     L%Count = L%Count + 1
     allocate(L%Items(L%Count)%P(s))
-    L%Items(L%Count)%P = P(1:s)
-
+    do i=1,s
+    L%Items(L%Count)%P(i) = P(i:i)
+    end do
    end subroutine TStringList_Add
 
    subroutine TStringList_SetCapacity(L, C)
@@ -233,6 +731,30 @@
      L%Count = L%Count -1
      
    end subroutine TStringList_Delete
+
+   function TStringList_IndexOf(L, S)
+    Type (TStringList) :: L
+    character(LEN=*), intent(in) :: S
+    integer TStringList_IndexOf, i, j,slen
+
+    slen = len_trim(S)
+    do i=1,L%Count
+     if ( size(L%Items(i)%P)==slen) then
+ !Yes, comparing strings and pointer strings really is this horrible...
+       j=1
+       do while (L%Items(i)%P(j)==S(j:j)) 
+          j=j+1
+          if (j>slen) then
+            TStringList_IndexOf = i
+            return         
+          end if
+       end do
+     end if
+    end do
+    TStringList_IndexOf=-1
+     
+   end function TStringList_IndexOf
+
 
       recursive subroutine QuickSortArr_Real(Arr, Lin, R, index)
       !Sorts an array of pointers to arrays of reals by the value of the index'th entry
@@ -325,38 +847,36 @@
 
   module AMLutils
   use Lists
-!DEC$ IF .false.        
+       
 #ifdef DECONLY
-!DEC$ ENDIF    
    !Comment out if linking to LAPACK/MKL separetly 
    !CXML only has LAPACK 2.0
     include 'CXML_INCLUDE.F90'
-!DEC$ IF .false.
 #endif
-!DEC$ ENDIF
-  
+ 
 
-!DEC$ IF .false.        
 #ifdef NAGF95
         use F90_UNIX
 #endif
-!DEC$ ENDIF     
 
-!DEC$ IF .false.
+     implicit none
+
 #ifndef NAGF95
-!DEC$ ENDIF
+#ifndef GFC
+#ifndef __INTEL_COMPILER_BUILD_DATE
         integer iargc
         external iargc
-!DEC$ IF .false.
 #endif
-!DEC$ ENDIF
+#endif
+#endif
+
 
 #ifdef MPI
     include "mpif.h"
 #endif
 
-
   integer :: Feedback = 1
+  integer, parameter :: tmp_file_unit = 50
 
 
   double precision, parameter :: pi=3.14159265358979323846264338328d0, &
@@ -366,22 +886,83 @@
 
   real, parameter :: pi_r = 3.141592653, twopi_r = 2*pi_r, fourpi_r = twopi_r*2
 
-  integer, parameter :: tmp_file_unit = 50
   logical :: flush_write = .true.
     !True means no data lost on crashes, but may make it slower
+    
+  integer, parameter :: file_units_start = 20
+  integer, parameter :: file_units_end = 100
+  
+  logical file_units(file_units_start:file_units_end)
 
   contains
 
+ function new_file_unit()
+  integer i, new_file_unit
+  logical, save :: file_units_inited = .false.
+ 
+  if (.not. file_units_inited) then
+   file_units = .false.
+   file_units_inited = .true.
+  end if
+ 
+  do i=file_units_start, file_units_end
+   if (.not. file_units(i) .and. i/=tmp_file_unit) then
+    file_units(i)=.true.
+    new_file_unit = i
+    return
+   end if
+  end do 
+  
+  stop 'No unused file unit numbers'
+  
+ end function new_file_unit
+
+
+ subroutine CloseFile(i)
+  integer, intent(in) :: i
+  
+  close(i)
+  file_units(i) = .false.
+    
+ end subroutine CloseFile 
 
   function GetParamCount()
+   integer GetParamCount
  
     GetParamCount = iargc() 
 
   end function GetParamCount
 
+  function IsMainMPI()
+   logical IsMainMPI
+#ifdef MPI 
+   integer ierror, MPIrank
+    call mpi_comm_rank(mpi_comm_world,MPIrank,ierror)
+    IsMainMPI = MPIrank==0
+#else
+    IsMainMPI = .true.
+#endif    
+
+  end function IsMainMPI
+
+  subroutine MpiStop(Msg)
+   character(LEN=*), intent(in), optional :: Msg
+   integer i
+
+   if (present(Msg)) write(*,*) trim(Msg)
+
+#ifdef MPIPIX
+    call mpi_finalize(i)
+#endif
+    i=1     !put breakpoint on this line to debug
+    stop
+    
+ end subroutine MpiStop
+ 
+
   function GetParam(i)
 
-   character(LEN=120) GetParam
+   character(LEN=512) GetParam
    integer, intent(in) :: i
  
    if (iargc() < i) then
@@ -413,12 +994,34 @@
   end function concat
 
 
+  subroutine Exchange(i1,i2)
+   integer i1,i2,tmp
+ 
+   tmp=i1
+   i1=i2
+   i2=tmp
+
+  end subroutine Exchange
+
   subroutine WriteS(S)
    character(LEN=*), intent(in) :: S
 
     write (*,*) trim(S)
  
   end subroutine WriteS
+
+  subroutine StringReplace(FindS, RepS, S)
+   character(LEN=*), intent(in) :: FindS, RepS
+   character(LEN=*), intent(inout) :: S
+   integer i
+   
+   i = index(S,FindS)
+   if (i>0) then
+     S = S(1:i-1)//trim(RepS)//S(i+len_trim(FindS):len_trim(S))
+   end if
+  
+  
+  end subroutine StringReplace
 
   function numcat(S, num)
    character(LEN=*) S
@@ -430,7 +1033,7 @@
    !OK, so can probably do with with a format statement too... 
   end function numcat
 
-
+ 
   function IntToStr(I)
    integer , intent(in) :: I
    character(LEN=30) IntToStr
@@ -440,8 +1043,15 @@
 
   end function IntToStr
 
-  
-  function RealToStr(R, figs)
+  function StrToInt(S)
+   integer :: StrToInt
+   character(LEN=30), intent(in) :: S
+
+   read (S,*) StrToInt
+  end function StrToInt
+
+
+   function RealToStr(R, figs)
    real, intent(in) :: R
    integer, intent(in), optional :: figs
    character(LEN=30) RealToStr
@@ -470,7 +1080,7 @@
   
   function IndexOf(aval,arr, n)
      integer, intent(in) :: n, arr(n), aval
-     integer i
+     integer IndexOf, i
 
      do i=1,n
         if (arr(i)==aval) then
@@ -502,6 +1112,28 @@
      MinIndex = locs(1)
 
   end function MinIndex
+
+
+   subroutine TList_RealArr_SaveToFile(L,fname)
+    character(LEN=*), intent(IN) :: fname
+    Type (TList_RealArr) :: L
+    character(LEN=20) aform
+    integer i
+    integer :: Plen = -1
+    integer :: file_id
+
+    file_id = new_file_unit()
+    call CreateTxtFile(fname,file_id)
+    do i=1, L%Count 
+     if (PLen /= size(L%Items(i)%P)) then
+      PLen = size(L%Items(i)%P)
+      aform = '('//trim(IntToStr(PLen))//'E16.8)'
+     end if 
+     write (file_id,aform) L%Items(i)%P
+    end do
+    call CloseFile(file_id)   
+
+   end subroutine TList_RealArr_SaveToFile
 
 
   function ExtractFilePath(aname)
@@ -536,28 +1168,66 @@
 
   end function ExtractFileName
 
+ function ChangeFileExt(aname,ext)
+    character(LEN=*), intent(IN) :: aname,ext
+    character(LEN=120) ChangeFileExt
+    integer len, i
+
+    len = len_trim(aname)
+    do i = len, 1, -1
+       if (aname(i:i)=='.') then
+          ChangeFileExt = aname(1:i) // trim(ext)
+          return
+       end if
+    end do
+    ChangeFileExt = trim(aname) // '.' // trim(ext)
+
+  end function ChangeFileExt
+
+
+  function CheckTrailingSlash(aname)
+     character(LEN=*), intent(in) :: aname
+     character(LEN=120) CheckTrailingSlash
+     integer len
+     
+     len = len_trim(aname)
+     if (aname(len:len) /= '\' .and. aname(len:len) /= '/') then
+      CheckTrailingSlash = trim(aname)//'/'
+     else
+      CheckTrailingSlash = aname
+     end if 
+
+
+  end  function CheckTrailingSlash
+
+
   subroutine DeleteFile(aname)
     character(LEN=*), intent(IN) :: aname
+    integer file_id 
 
-     open(unit = tmp_file_unit, file = aname, err = 2)
-     close(unit = tmp_file_unit, status = 'DELETE')
+     file_id = new_file_unit()
+
+     open(unit = file_id, file = aname, err = 2)
+     close(unit = file_id, status = 'DELETE')
  2   return
+
+     file_units(file_id) = .false.
     
   end subroutine DeleteFile
 
+
   subroutine FlushFile(aunit)
+#ifdef __INTEL_COMPILER_BUILD_DATE
+  USE IFPORT
+#endif
     integer, intent(IN) :: aunit
 
-!DEC$ IF .false.        
+
 #ifdef IBMXL
      call flush_(aunit)
 #else
-!DEC$ ENDIF     
      call flush(aunit)
-!DEC$ IF .false.
 #endif
-!DEC$ ENDIF
-    
     
   end subroutine FlushFile
 
@@ -592,6 +1262,23 @@
  
  end subroutine OpenTxtFile
 
+subroutine CreateOpenTxtFile(aname, aunit, append)
+   character(LEN=*), intent(IN) :: aname
+   integer, intent(in) :: aunit
+   logical, optional, intent(in) :: append
+   logical A
+
+   if (present(append)) then
+      A=append
+   else
+      A = .false.
+   endif
+
+   call CreateOpenFile(aname,aunit,'formatted',A)
+
+ end subroutine CreateOpenTxtFile
+
+
  subroutine CreateTxtFile(aname, aunit)
     character(LEN=*), intent(IN) :: aname
    integer, intent(in) :: aunit
@@ -614,20 +1301,102 @@
 
  end subroutine CreateFile
 
+ subroutine CreateOpenFile(aname, aunit,mode, append)
+    character(LEN=*), intent(IN) :: aname,mode
+   integer, intent(in) :: aunit
+   logical, optional, intent(in) :: append
+   logical A
 
+   if (present(append)) then
+      A=append
+   else
+      A = .false.
+   endif
+
+   if (A) then
+     open(unit=aunit,file=aname,form=mode,status='unknown', err=500, position='append')
+   else
+     open(unit=aunit,file=aname,form=mode,status='replace', err=500)
+   end if
+
+   return
+
+500 write(*,*) 'Error creatinging or opening '//trim(aname)
+    stop
+
+ end subroutine CreateOpenFile
+
+ 
+
+ function FileColumns(aunit) result(n)
+   integer, intent(in) :: aunit
+   integer n,i
+   logical isNum
+   character(LEN=4096) :: InLine
+
+   n=0
+   isNum=.false.
+   read(aunit,'(a)', end = 10) InLine
+   do i=1, len_trim(InLIne)
+    if (verify(InLine(i:i),'-+eE.0123456789') == 0) then
+      if (.not. IsNum) n=n+1
+      IsNum=.true.
+    else
+      IsNum=.false.     
+    end if
+   end do
+
+10 rewind aunit
+  
+ end function FileColumns
+
+ function FileLines(aunit) result(n)
+   integer, intent(in) :: aunit
+   integer n
+   character(LEN=4096) :: InLine
+
+   n=0
+   do
+
+   read(aunit,'(a)', end = 200) InLine
+   n = n+1
+   end do
+ 
+200 rewind aunit
+    
+
+ end function FileLines
+
+
+
+ function TxtFileColumns(aname) result(n)
+    character(LEN=*), intent(IN) :: aname
+    integer n, file_id 
+
+
+    file_id = new_file_unit()
+
+    call OpenTxtFile(aname, file_id)
+    n = FileColumns(file_id)
+    call CloseFile(file_id)
+
+ end function TxtFileColumns
+ 
+ 
  function LastFileLine(aname)
    character(LEN=*), intent(IN) :: aname
    character(LEN = 5000) LastFileLine, InLine
-
+   integer  file_id 
+   
+   file_id = new_file_unit()
  
    InLine = ''
-   call OpenTxtFile(aname,tmp_file_unit)
+   call OpenTxtFile(aname,file_id)
    do
-   read(tmp_file_unit,'(a)', end = 200) InLine
- 
+    read(file_id,'(a)', end = 200) InLine
    end do
  
-200  close(tmp_file_unit)
+200 call CloseFile(file_id)
 
    LastFileLine = InLine
  
@@ -737,6 +1506,242 @@
 
       end function LogGamma
 
+    REAL FUNCTION GAMMA(X)
+!----------------------------------------------------------------------
+!
+! This routine calculates the GAMMA function for a real argument X.
+!   Computation is based on an algorithm outlined in reference 1.
+!   The program uses rational functions that approximate the GAMMA
+!   function to at least 20 significant decimal digits.  Coefficients
+!   for the approximation over the interval (1,2) are unpublished.
+!   Those for the approximation for X .GE. 12 are from reference 2.
+!   The accuracy achieved depends on the arithmetic system, the
+!   compiler, the intrinsic functions, and proper selection of the
+!   machine-dependent constants.
+!*******************************************************************
+!
+! Explanation of machine-dependent constants
+!
+! beta   - radix for the floating-point representation
+! maxexp - the smallest positive power of beta that overflows
+! XBIG   - the largest argument for which GAMMA(X) is representable
+!          in the machine, i.e., the solution to the equation
+!                  GAMMA(XBIG) = beta**maxexp
+! XINF   - the largest machine representable floating-point number;
+!          approximately beta**maxexp
+! EPS    - the smallest positive floating-point number such that
+!          1.0+EPS .GT. 1.0
+! XMININ - the smallest positive floating-point number such that
+!          1/XMININ is machine representable
+!
+!     Approximate values for some important machines are:
+!
+!                            beta       maxexp        XBIG
+!
+! CRAY-1         (S.P.)        2         8191        966.961
+! Cyber 180/855
+!   under NOS    (S.P.)        2         1070        177.803
+! IEEE (IBM/XT,
+!   SUN, etc.)   (S.P.)        2          128        35.040
+! IEEE (IBM/XT,
+!   SUN, etc.)   (D.P.)        2         1024        171.624
+! IBM 3033       (D.P.)       16           63        57.574
+! VAX D-Format   (D.P.)        2          127        34.844
+! VAX G-Format   (D.P.)        2         1023        171.489
+!
+!                            XINF         EPS        XMININ
+!
+! CRAY-1         (S.P.)   5.45E+2465   7.11E-15    1.84E-2466
+! Cyber 180/855
+!   under NOS    (S.P.)   1.26E+322    3.55E-15    3.14E-294
+! IEEE (IBM/XT,
+!   SUN, etc.)   (S.P.)   3.40E+38     1.19E-7     1.18E-38
+! IEEE (IBM/XT,
+!   SUN, etc.)   (D.P.)   1.79D+308    2.22D-16    2.23D-308
+! IBM 3033       (D.P.)   7.23D+75     2.22D-16    1.39D-76
+! VAX D-Format   (D.P.)   1.70D+38     1.39D-17    5.88D-39
+! VAX G-Format   (D.P.)   8.98D+307    1.11D-16    1.12D-308
+!
+!*******************************************************************
+!*******************************************************************
+!
+! Error returns
+!
+!  The program returns the value XINF for singularities or
+!     when overflow would occur.  The computation is believed
+!     to be free of underflow and overflow.
+!
+!
+!  Intrinsic functions required are:
+!
+!     INT, DBLE, EXP, LOG, REAL, SIN
+!
+!
+! References: "An Overview of Software Development for Special
+!              Functions", W. J. Cody, Lecture Notes in Mathemati,
+!              506, Numerical Analysis Dundee, 1975, G. A. Watson
+!              (ed.), Springer Verlag, Berlin, 1976.
+!
+!              Computer Approximations, Hart, Et. Al., Wiley and
+!              sons, New York, 1968.
+!
+!  Latest modification: October 12, 1989
+!
+!  Authors: W. J. Cody and L. Stoltz
+!           Applied Mathemati Division
+!           Argonne National Laboratory
+!           Argonne, IL 60439
+!
+!----------------------------------------------------------------------
+      INTEGER I,N
+      LOGICAL PARITY
+    REAL C,EPS,FACT,HALF,ONE,P,PI,Q,RES,SQRTPI,SUM,TWELVE, &
+         TWO,X,XBIG,XDEN,XINF,XMININ,XNUM,Y,Y1,YSQ,Z,ZERO
+      DIMENSION C(7),P(8),Q(8)
+!----------------------------------------------------------------------
+!  Mathematical constants
+!----------------------------------------------------------------------
+    DATA ONE,HALF,TWELVE,TWO,ZERO/1.0E0,0.5E0,12.0E0,2.0E0,0.0E0/, &
+        SQRTPI/0.9189385332046727417803297E0/, &
+        PI/3.1415926535897932384626434E0/
+!----------------------------------------------------------------------
+!  Machine dependent parameters
+!----------------------------------------------------------------------
+    DATA XBIG,XMININ,EPS/35.040E0,1.18E-38,1.19E-7/, &
+        XINF/3.4E38/
+!----------------------------------------------------------------------
+!  Numerator and denominator coefficients for rational minimax
+!     approximation over (1,2).
+!----------------------------------------------------------------------
+    DATA P/-1.71618513886549492533811E+0,2.47656508055759199108314E+1, &
+          -3.79804256470945635097577E+2,6.29331155312818442661052E+2, &
+          8.66966202790413211295064E+2,-3.14512729688483675254357E+4, &
+          -3.61444134186911729807069E+4,6.64561438202405440627855E+4/
+    DATA Q/-3.08402300119738975254353E+1,3.15350626979604161529144E+2, &
+         -1.01515636749021914166146E+3,-3.10777167157231109440444E+3, &
+           2.25381184209801510330112E+4,4.75584627752788110767815E+3, &
+         -1.34659959864969306392456E+5,-1.15132259675553483497211E+5/
+!----------------------------------------------------------------------
+! Coefficients for minimax approximation over (12, INF).
+!----------------------------------------------------------------------
+    DATA C/-1.910444077728E-03,8.4171387781295E-04, &
+        -5.952379913043012E-04,7.93650793500350248E-04, &
+        -2.777777777777681622553E-03,8.333333333333333331554247E-02, &
+         5.7083835261E-03/
+!----------------------------------------------------------------------
+!  Statement functions for conversion between integer and float
+!----------------------------------------------------------------------
+      PARITY = .FALSE.
+      FACT = ONE
+      N = 0
+      Y = X
+      IF (Y .LE. ZERO) THEN
+!----------------------------------------------------------------------
+!  Argument is negative
+!----------------------------------------------------------------------
+            Y = -X
+            Y1 = AINT(Y)
+            RES = Y - Y1
+            IF (RES .NE. ZERO) THEN
+                  IF (Y1 .NE. AINT(Y1*HALF)*TWO) PARITY = .TRUE.
+                  FACT = -PI / SIN(PI*RES)
+                  Y = Y + ONE
+               ELSE
+                  RES = XINF
+                  GO TO 900
+            END IF
+      END IF
+!----------------------------------------------------------------------
+!  Argument is positive
+!----------------------------------------------------------------------
+      IF (Y .LT. EPS) THEN
+!----------------------------------------------------------------------
+!  Argument .LT. EPS
+!----------------------------------------------------------------------
+            IF (Y .GE. XMININ) THEN
+                  RES = ONE / Y
+               ELSE
+                  RES = XINF
+                  GO TO 900
+            END IF
+         ELSE IF (Y .LT. TWELVE) THEN
+            Y1 = Y
+            IF (Y .LT. ONE) THEN
+!----------------------------------------------------------------------
+!  0.0 .LT. argument .LT. 1.0
+!----------------------------------------------------------------------
+                  Z = Y
+                  Y = Y + ONE
+               ELSE
+!----------------------------------------------------------------------
+!  1.0 .LT. argument .LT. 12.0, reduce argument if necessary
+!----------------------------------------------------------------------
+                  N = INT(Y) - 1
+                  Y = Y - REAL(N)
+                  Z = Y - ONE
+            END IF
+!----------------------------------------------------------------------
+!  Evaluate approximation for 1.0 .LT. argument .LT. 2.0
+!----------------------------------------------------------------------
+            XNUM = ZERO
+            XDEN = ONE
+            DO 260 I = 1, 8
+               XNUM = (XNUM + P(I)) * Z
+               XDEN = XDEN * Z + Q(I)
+  260       CONTINUE
+            RES = XNUM / XDEN + ONE
+            IF (Y1 .LT. Y) THEN
+!----------------------------------------------------------------------
+!  Adjust result for case  0.0 .LT. argument .LT. 1.0
+!----------------------------------------------------------------------
+                  RES = RES / Y1
+               ELSE IF (Y1 .GT. Y) THEN
+!----------------------------------------------------------------------
+!  Adjust result for case  2.0 .LT. argument .LT. 12.0
+!----------------------------------------------------------------------
+                  DO 290 I = 1, N
+                     RES = RES * Y
+                     Y = Y + ONE
+  290             CONTINUE
+            END IF
+         ELSE
+!----------------------------------------------------------------------
+!  Evaluate for argument .GE. 12.0,
+!----------------------------------------------------------------------
+            IF (Y .LE. XBIG) THEN
+                  YSQ = Y * Y
+                  SUM = C(7)
+                  DO 350 I = 1, 6
+                     SUM = SUM / YSQ + C(I)
+  350             CONTINUE
+                  SUM = SUM/Y - Y + SQRTPI
+                  SUM = SUM + (Y-HALF)*LOG(Y)
+                  RES = EXP(SUM)
+               ELSE
+                  RES = XINF
+                  GO TO 900
+            END IF
+      END IF
+!----------------------------------------------------------------------
+!  Final adjustments and return
+!----------------------------------------------------------------------
+      IF (PARITY) RES = -RES
+      IF (FACT .NE. ONE) RES = FACT / RES
+  900 GAMMA = RES
+
+      END FUNCTION GAMMA
+
+  subroutine SetIdlePriority
+#ifdef RUNIDLE
+    USE DFWIN
+    Integer dwPriority 
+    Integer CheckPriority
+
+    dwPriority = 64 ! idle priority
+    CheckPriority = SetPriorityClass(GetCurrentProcess(), dwPriority)
+#endif
+  end subroutine SetIdlePriority
+
 
     subroutine GetThreeJs(thrcof,l2in,l3in,m2in,m3in)
       !Recursive evaluation of 3j symbols. Does minimal error checking on input parameters.
@@ -744,9 +1749,8 @@
       integer, parameter :: dl = KIND(1.d0)
       integer, intent(in) :: l2in,l3in, m2in,m3in
       real(dl), dimension(*) :: thrcof
-      
+#ifdef THREEJ
       INTEGER, PARAMETER :: i8 = 8
- 
       integer(i8) :: l2,l3,m2,m3
       integer(i8) :: l1, m1, l1min,l1max, lmatch, nfin, a1, a2
       
@@ -755,7 +1759,7 @@
       integer i,ier, index, nlim, sign2
       integer nfinp1,nfinp2,nfinp3, lstep, nstep2,n
       real(dl), parameter :: zero = 0._dl, one = 1._dl
-      real(dl), parameter ::  tiny = 1.0d-10, srtiny=1.0d-5, huge = 1.d10, srhuge = 1.d5
+      real(dl), parameter ::  tiny = 1.0d-30, srtiny=1.0d-15, huge = 1.d30, srhuge = 1.d15
   
     ! routine to generate set of 3j-coeffs (l1,l2,l3\\ m1,m2,m3)
 
@@ -1019,6 +2023,9 @@
          thrcof(n) = cnorm*thrcof(n)
       end do
       return 
+#else
+   stop 'must compile with -DTHREEJ to use 3j routine'
+#endif
 
     end subroutine GetThreeJs
 
@@ -1029,8 +2036,6 @@
   
 
 module Random
- double precision  gset
- integer iset
  integer :: rand_inst = 0 
 
 contains
@@ -1038,13 +2043,17 @@ contains
   subroutine initRandom(i)
   use AMLUtils
   implicit none
-  external rmarin
   integer, optional, intent(IN) :: i
-  integer kl,ij
+  integer seed_in,kl,ij
   character(len=10) :: fred
   real :: klr
-      if (present(i)) then
-       iset=0
+  
+   if (present(i)) then
+    seed_in = i
+   else
+    seed_in = -1
+   end if
+      if (seed_in /=-1) then
        kl = 9373
        ij = i
       else
@@ -1055,7 +2064,7 @@ contains
        kl = mod(int(klr*1000), 30081)       
       end if
 
-      if (Feedback > 0 ) write(*,'(" Random seeds:",1I6,",",1I6," rand_inst:",1I4)")') ij,kl,rand_inst
+      if (Feedback > 0 ) write(*,'(" Random seeds:",1I6,",",1I6," rand_inst:",1I4)') ij,kl,rand_inst
       call rmarin(ij,kl)
   end subroutine initRandom
 
@@ -1063,9 +2072,7 @@ contains
     integer, intent(in) :: nmax, n
     integer indices(n),i, ix
     integer tmp(nmax)
-    double precision ranmar
-    external ranmar
-
+ 
     if (n> nmax) stop 'Error in RandIndices, n > nmax'
     do i=1, nmax
        tmp(i)=i
@@ -1078,14 +2085,37 @@ contains
 
   end subroutine RandIndices
 
+
+  subroutine RandRotation(R, N)
+   !this is most certainly not the world's most efficient or robust random rotation generator
+    integer, intent(in) :: N
+    real R(N,N), vec(N), norm
+    integer i,j
+    
+    do j = 1, N
+     do
+         do i = 1, N
+          vec(i) = Gaussian1()
+         end do
+         do i = 1, j-1
+           vec = vec - sum(vec*R(i,:))*R(i,:)
+         end do
+         norm = sum(vec**2)
+         if (norm > 1e-3) exit
+     end do
+     R(j,:) = vec / sqrt(norm)
+    end do
+    
+  end subroutine RandRotation
+
+
   double precision function GAUSSIAN1()
     implicit none
     double precision R, V1, V2, FAC
-    double precision ranmar
-    external ranmar
- 
+    integer, save :: iset = 0
+    double precision, save :: gset
 
-        if (ISET==0) then
+     if (ISET==0) then
         R=2
         do while (R >= 1.d0)
         V1=2.d0*ranmar()-1.d0
@@ -1104,9 +2134,59 @@ contains
       end function GAUSSIAN1
 
 
+     double precision function CAUCHY1()
+      implicit none
+
+      Cauchy1 = Gaussian1()/max(1d-15,abs(Gaussian1()))
+
+     end function CAUCHY1
 
 
-end module Random
+     real FUNCTION RANDEXP1()
+!
+!     Random-number generator for the exponential distribution
+!     Algorithm EA from J. H. Ahrens and U. Dieter,
+!     Communications of the ACM, 31 (1988) 1330--1337.
+!     Coded by K. G. Hamilton, December 1996, with corrections.
+!
+      real u, up, g, y
+  
+      real, parameter ::   alog2= 0.6931471805599453
+      real, parameter ::      a = 5.7133631526454228
+      real, parameter ::      b = 3.4142135623730950
+      real, parameter ::     c = -1.6734053240284925
+      real, parameter ::      p = 0.9802581434685472
+      real, parameter ::     aa = 5.6005707569738080
+      real, parameter ::     bb = 3.3468106480569850
+      real, parameter ::     hh = 0.0026106723602095
+      real, parameter ::     dd = 0.0857864376269050
+
+      u = ranmar()
+      do while (u.le.0)                 ! Comment out this block 
+        u = ranmar()                    ! if your RNG can never
+      enddo                             ! return exact zero
+      g = c
+      u = u+u
+      do while (u.lt.1.0)
+         g = g + alog2
+         u = u+u
+      enddo
+      u = u-1.0
+      if (u.le.p) then
+        randexp1 = g + aa/(bb-u)
+        return
+      endif
+      do
+        u = ranmar()
+        y = a/(b-u)
+        up = ranmar()
+        if ((up*hh+dd)*(b-u)**2 .le. exp(-(y+c))) then
+          randexp1 = g+y
+          return
+        endif
+      enddo
+
+      end function randexp1
 
 
 ! This random number generator originally appeared in ''Toward a Universal 
@@ -1178,8 +2258,11 @@ end module Random
 !    should be:
 !           6533892.0  14220222.0  7275067.0
 !           6172232.0  8354498.0   10633180.0
-      double precision U(97), C, CD, CM
-      integer I97, J97
+      double precision U(97), C, CD, CM, S, T
+      integer I97, J97,i,j,k,l,m
+      integer ij,kl
+      integer ii,jj
+           
     
 !      INTEGER IRM(103)
       
@@ -1216,8 +2299,7 @@ end module Random
       I97 = 97
       J97 = 33
     
-      return
-      end
+      end subroutine RMARIN
 
       double precision function RANMAR()
 ! This is the random number generator proposed by George Marsaglia in 
@@ -1226,6 +2308,7 @@ end module Random
 ! numbers.
       double precision U(97), C, CD, CM
       integer I97, J97
+       double precision uni
     
       common /RASET1/ U, C, CD, CM, I97, J97
 !      INTEGER IVEC
@@ -1237,12 +2320,14 @@ end module Random
          J97 = J97 - 1
          if(J97 .eq. 0) J97 = 97
          C = C - CD
-         if( C .lt. 0.0 ) C = C + CM
+         if( C .lt. 0.d0 ) C = C + CM
          UNI = UNI - C
-         if( UNI .lt. 0.0 ) UNI = UNI + 1.0 ! bug?
+         if( UNI .lt. 0.d0 ) UNI = UNI + 1.0 ! bug?
          RANMAR = UNI
-      return
-      end
+      
+      end function RANMAR
 
+
+end module Random
 
 
