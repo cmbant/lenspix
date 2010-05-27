@@ -949,14 +949,14 @@ contains
     end if 
    if (wantphi) then
      !Make phi with correct correlation to T and E, AL May 2010
-     do l=2, P%lmax
+     do l=1, P%lmax
       if (P%Cl(l,1)==0) then
         tamp = 1.0
       else
         tamp=P%Cl(l,1)
       end if
       corr = P%PhiCl(l,2)/tamp
-      if (wantpol >=3) then
+      if (wantpol >=3 .and. l>=2) then
        Examp = (P%PhiCl(l,3)-corr*P%cl(l,C_C))*sqrt( tamp/(p%cl(l,C_E)*tamp - p%cl(l,C_C)**2))
        xamp = sqrt(max(0._sp, P%PhiCl(l,1) - corr*P%PhiCl(l,2) - Examp**2 ))
        A%Phi(1,l,0) =  Examp * A%Phi(1,l,0)
@@ -967,7 +967,7 @@ contains
       A%Phi(1,l,0) = A%Phi(1,l,0) + corr*A%TEB(1,l,0) + Gaussian1()*xamp
       xamp=  xamp/sqrt(2.0)
       do m = 1, l
-        if (wantpol >=3) A%Phi(1,l,m) =  Examp * A%Phi(1,l,m) 
+        if (wantpol >=3 .and. l>=2) A%Phi(1,l,m) =  Examp * A%Phi(1,l,m) 
         A%Phi(1,l,m) = A%Phi(1,l,m) + corr*A%TEB(1,l,m) + cmplx(Gaussian1(),Gaussian1())*xamp
       end do
      end do 
@@ -997,8 +997,8 @@ contains
    call HealpixAlm_Init(A,P%lmax, 0,HasPhi = .true.)
    if (.not. P%lens) call MpiStop('must have phi power spectrum')
 
-   A%Phi(:,0:1,:)=0 !So what about the dipole??
-   do l=2, P%lmax
+   A%Phi(:,0,:)=0
+   do l=1, P%lmax
       A%Phi(1,l,0) =Gaussian1()* sqrt(P%PhiCl(l,1))
       do m = 1, l
        A%Phi(1,l,m) =cmplx(Gaussian1(),Gaussian1())* sqrt(P%PhiCl(l,1)/2)
