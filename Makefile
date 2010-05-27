@@ -20,6 +20,9 @@ F90FLAGS = $(FFLAGS) -I$(INCLUDE) $(LAPACKL)
 OBJFILES= toms760.o inifile.o utils.o spin_alm_tools.o \
    HealpixObj.o HealpixVis.o SimLens.o
 
+default: simlens
+all: simlens
+
 spin_alm_tools.o:  utils.o toms760.o
 HealpixObj.o: spin_alm_tools.o
 HealpixVis.o: HealpixObj.o
