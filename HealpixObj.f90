@@ -368,7 +368,7 @@ contains
     Type(HealpixAlm) :: A
     integer l,i,ix
 
-    call HealpixPower_Init(P,A%lmax,A%npol==3)
+    call HealpixPower_Init(P,A%lmax,A%npol==3, A%HasPhi)
     
     P%Cl(0:1,:) = 0
     do l=0, P%lmax
