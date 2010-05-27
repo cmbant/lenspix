@@ -238,19 +238,39 @@ contains
      Type(HealpixPower) P
      character(Len=*), intent(in) :: fname
      integer l
+     real fac
 
      call CreateTxtFile(fname,1)
        if (P%pol) then
-         write (1,'(1I7,4E17.7)') 0,P%Cl(0,:) *mK**2
-       else
-         write (1,'(1I7,1E17.7)') 0,P%Cl(0,1) *mK**2
+         if (P%lens) then
+          write (1,'(1I7,7E17.7)') 0,P%Cl(0,:) *mK**2, 0.,0.,0. 
+         else
+          write (1,'(1I7,4E17.7)') 0,P%Cl(0,:) *mK**2
+         end if 
+       else 
+         if (P%lens) then
+          write (1,'(1I7,3E17.7)') 0,P%Cl(0,1) *mK**2, 0.,0.
+         else
+          write (1,'(1I7,1E17.7)') 0,P%Cl(0,1) *mK**2         
+         end if
        end if
  
      do l=1,P%lmax
+       fac = l*(l+1)
        if (P%pol) then
-         write (1,'(1I7,4E17.7)') l,l*(l+1)*P%Cl(l,:)/twopi *mK**2
+         if (P%lens) then
+          write (1,'(1I7,7E17.7)') l,fac*P%Cl(l,:)/twopi *mK**2, &
+              fac**2*P%PhiCl(l,1)/twopi,fac**1.5*P%PhiCl(l,2:3)/twopi * mK 
+         else
+          write (1,'(1I7,4E17.7)') l,fac*P%Cl(l,:)/twopi *mK**2
+         end if
        else
-         write (1,'(1I7,1E17.7)') l,l*(l+1)*P%Cl(l,1)/twopi *mK**2
+         if (P%lens) then
+          write (1,'(1I7,3E17.7)') l,fac*P%Cl(l,1)/twopi *mK**2, &
+              fac**2*P%PhiCl(l,1)/twopi,fac**1.5*P%PhiCl(l,2)/twopi * mK 
+         else
+          write (1,'(1I7,1E17.7)') l,fac*P%Cl(l,1)/twopi *mK**2
+         end if
        end if
      end do
 
@@ -367,6 +387,22 @@ contains
            ) / (2.*l + 1.)
       end if
     end do 
+    
+    if (A%HasPhi) then
+       do l=0, P%lmax
+         P%PhiCl(l,1) = ( REAL(A%Phi(1,l,0))**2 &
+                + 2.*SUM(A%Phi(1,l,1:l)*CONJG(A%Phi(1,l,1:l)) )) / (2*l + 1)
+         !T-phi
+         P%PhiCl(l,2) = ( REAL(A%TEB(1,l,0))*REAL(A%Phi(1,l,0)) &
+                + 2.*SUM(real(A%TEB(1,l,1:l)*CONJG(A%Phi(1,l,1:l))) )) /(2*l + 1)
+         if (l>1 .and. A%npol >2) then
+           !E-phi
+           P%PhiCl(l,3) = ( REAL(A%TEB(2,l,0))*REAL(A%Phi(1,l,0)) &
+                + 2.*SUM(real(A%TEB(2,l,1:l)*CONJG(A%Phi(1,l,1:l))) )) /(2*l + 1)
+         end if 
+       end do 
+         
+    end if
 
    end subroutine HealpixAlm2Power
    
@@ -1976,11 +2012,3 @@ contains
  end subroutine CrossPowersToHealpixPowerArray
 
 end module HealpixObj
-
-
-
-
-
-
-
-

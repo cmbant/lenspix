@@ -87,6 +87,8 @@ program SimLensCMB
   !Reads in unlensed C_l text files as produced by CAMB (or CMBFAST if you aren't doing lensing)
 
   call HealpixAlm_Sim(A, P, rand_seed,HasPhi=.true., dopol = want_pol)
+  call HealpixAlm2Power(A,P)
+  call HealpixPower_Write(P,trim(file_stem)//'_unlensed_simulated.dat')
 
   call HealpixAlm2GradientMap(H,A, GradPhi,npix,'PHI')
 
