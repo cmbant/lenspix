@@ -884,7 +884,7 @@ contains
    integer l,m
    logical wantphi
    integer wantpol
-   real(sp) xamp, corr, tamp, Bamp, Examp
+   real(sp) xamp, corr, tamp, Bamp, Examp, sqrt2
    complex(sp) g
 
    if (present(seed)) then
@@ -908,9 +908,9 @@ contains
    end if
 
    call HealpixAlm_Init(A,P%lmax, wantpol, HasPhi=wantphi)
-
+   sqrt2 = sqrt(2.)
    A%TEB=0
-   do l=2, P%lmax
+   do l=1, P%lmax
       A%TEB(1,l,0) =Gaussian1()* sqrt(P%Cl(l,1))
       tamp = sqrt(P%Cl(l,1)/2)
       do m = 1, l
@@ -923,7 +923,7 @@ contains
       !polarization, E corrolated to T
 
       do l = 2, P%lmax 
-        if (p%cl(l,C_t) == 0) then
+        if (p%cl(l,C_T) == 0) then
           tamp = 1.0  !Prevent divide by zero - TE should also be zero
         else
           tamp = p%cl(l,C_T)
@@ -935,8 +935,8 @@ contains
         if (wantphi) A%Phi(1,l,0) = g 
         A%TEB(2,l,0) = Corr*A%TEB(1,l,0) + real(g)*xamp
         A%TEB(3,l,0)=  Bamp*Gaussian1()
-        xamp = xamp / sqrt(2.0)
-        Bamp = Bamp /sqrt(2.0)
+        xamp = xamp / sqrt2
+        Bamp = Bamp /sqrt2
         do m =1, l
           g = cmplx(Gaussian1(),Gaussian1())
           A%TEB(2,l,m) = corr*A%TEB(1,l,m) + g*xamp
@@ -960,12 +960,12 @@ contains
        Examp = (P%PhiCl(l,3)-corr*P%cl(l,C_C))*sqrt( tamp/(p%cl(l,C_E)*tamp - p%cl(l,C_C)**2))
        xamp = sqrt(max(0._sp, P%PhiCl(l,1) - corr*P%PhiCl(l,2) - Examp**2 ))
        A%Phi(1,l,0) =  Examp * A%Phi(1,l,0)
-       Examp = Examp/sqrt(2.0)
+       Examp = Examp/sqrt2
       else
         xamp = sqrt(max(0._sp,P%PhiCl(l,1) - corr*P%PhiCl(l,2)))
       end if        
       A%Phi(1,l,0) = A%Phi(1,l,0) + corr*A%TEB(1,l,0) + Gaussian1()*xamp
-      xamp=  xamp/sqrt(2.0)
+      xamp=  xamp/sqrt2
       do m = 1, l
         if (wantpol >=3 .and. l>=2) A%Phi(1,l,m) =  Examp * A%Phi(1,l,m) 
         A%Phi(1,l,m) = A%Phi(1,l,m) + corr*A%TEB(1,l,m) + cmplx(Gaussian1(),Gaussian1())*xamp
