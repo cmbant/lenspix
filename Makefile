@@ -3,15 +3,15 @@
 
 #Intel. Note heap-arrays needs v10+ of compiler, and avoids Seg Faults for large arrays
 F90C     = mpif90
-FFLAGS = -ip -O3 -fpp -error-limit 5 -DMPIPIX -DMPI -heap-arrays
+FFLAGS = -ip -O3 -fpp -error-limit 5 -DMPIPIX -DMPI -heap-arrays  -mkl=parallel
 #use these lines instead for non-MPI runs
 #F90C     = ifort
-#FFLAGS =  -ip -O3 -fpp -error-limit 5 -heap-arrays
+#FFLAGS =  -ip -O3 -fpp -error-limit 5 -heap-arrays  -mkl=parallel
+
 LAPACKL = -L/usr/local/cfitsio/intel10/64/3.040/lib \
 	 -L/usr/local/healpix/intel10/64/2.01/serial/lib \
 	 -I/usr/local/healpix/intel10/64/2.01/serial/include \
-	-L/usr/local/intel/mkl/9.1/lib/em64t \
-	 -lhealpix -lcfitsio -lmkl_lapack -lmkl_em64t -lguide -lpthread 
+	  -lmkl_lapack -lhealpix -lcfitsio  -lguide -lpthread  
 
 
 #Digital/Compaq fortran; run with e.g. dmpirun -pf orca.procdist where orca.procdist contains node info
@@ -23,7 +23,7 @@ LAPACKL = -L/usr/local/cfitsio/intel10/64/3.040/lib \
 
 
 
-F90FLAGS = $(FFLAGS) $(INCLUDE) $(LAPACKL)
+F90FLAGS = $(FFLAGS) -I$(INCLUDE) $(LAPACKL)
 
 OBJFILES= toms760.o inifile.o utils.o spin_alm_tools.o \
    HealpixObj.o HealpixVis.o SimLens.o
