@@ -31,7 +31,7 @@ application=./simlens
 options=params.ini
 
 #! Work directory
-workdir=./
+workdir=/home/aml1005/git/lenspix
 
 #! MPIrun
 runmpi=/usr/local/openmpi/intel10/64/1.2.2/bin/mpirun

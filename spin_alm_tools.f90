@@ -3203,7 +3203,7 @@ contains
         map2N(map_ix)%M(H%North_Start(H%MpiId):H%North_Start(H%MpiId)+H%North_Size(H%MpiId)-1,i) = &
          maps(map_ix)%M(H%North_Start(H%MpiId):H%North_Start(H%MpiId)+H%North_Size(H%MpiId)-1,i)
         map2S(map_ix)%M(H%South_Start(H%MpiId):H%South_Start(H%MpiId)+H%South_Size(H%MpiId)-1,i) = &
-         maps(map_ix)%M(H%South_Start(H%MpiId):H%South_Start(H%MpiId)+H%South_Size(H%MpiId)-1,i) = &
+         maps(map_ix)%M(H%South_Start(H%MpiId):H%South_Start(H%MpiId)+H%South_Size(H%MpiId)-1,i) 
         end do   
         deallocate(maps(map_ix)%M)
        end do

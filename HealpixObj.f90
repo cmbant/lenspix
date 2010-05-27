@@ -47,7 +47,7 @@ module HealpixObj
  type HealpixPower
    !Raw Cls
    !read from text files in l(l+1)C_l/(2pi microK^2)
-   !PhiCl is lensing potential phi-phi and phi-T. 
+   !PhiCl is lensing potential phi-phi and phi-T and phi-E. 
    !Phi is read in above units, but stored here as dimensionless
    integer(I4B) lmax
    logical pol, lens
@@ -95,7 +95,7 @@ contains
      end if
      P%Cl=0
      if (P%lens) then
-      allocate(P%PhiCl(0:almax,2))      
+      allocate(P%PhiCl(0:almax,3))      
       P%PhiCl = 0
      end if
 
@@ -136,7 +136,7 @@ contains
      integer, intent(in) :: lmax
      logical,intent(in), optional :: dolens, pol
      integer i,l, ColNum
-     real(DP) T,E,B,TE, scal, phi, phiT
+     real(DP) T,E,B,TE, scal, phi, phiT, phiE
      logical tensors, dolens2, pol2
      integer, parameter :: io_unit= 1
      character(LEN=200) :: InLine
@@ -158,7 +158,7 @@ contains
  
     !See how many columns - includes magnetic polarization if four columns
       read(io_unit,'(a)') InLine
-      do l=8,2,-1
+      do l=9,2,-1
          Colnum=l 
          read(InLine,*, end=110) test(1:l)
          exit
@@ -166,12 +166,13 @@ contains
 
       end do 
       
-      tensors = colnum==5 .or. colnum==7
-      if (P%lens .and. colnum /= 6 .and. colnum/=7) call MpiStop('can''t indentify text phi cl columns')
+      tensors = colnum==5 .or. colnum > 7
+      if (P%lens .and. (colnum < 6 .or. colnum>8)) call MpiStop('can''t indentify text phi cl columns')
       if (pol2 .and. colnum<3) call mpiStop('No polarization in C_l file' ) 
       rewind io_unit
 
       B=0
+      phiE=0
       P%Cl = 0
   
       if (dolens2) P%PhiCl = 0
@@ -182,7 +183,11 @@ contains
        else
        if (tensors) then
          if (P%lens) then
-          read (io_unit,*,end=118) l, T, E, B , TE, phi, phiT
+          if (colnum ==8) then
+           read (io_unit,*,end=118) l, T, E, B , TE, phi, phiT, phiE
+          else
+           read (io_unit,*,end=118) l, T, E, B , TE, phi, phiT
+          end if
          else
           read (io_unit,*,end=118) l, T, E, B , TE
          end if
@@ -206,8 +211,20 @@ contains
          P%Cl(l,4) = TE*scal
          end if
          if (P%Lens .and. l>=1) then
+             if (colnum==8) then
+             ! lens_potential_output_file from CAMB May 2010+
+             P%PhiCl(l,1) = phi  * twopi/real(l*(l+1),dp)**2
+             if (l>300) then 
+              !just kill numerical noise on T and E lensing correlations on small scales             
+              P%PhiCl(l,2:3)=0
+             else  
+              P%PhiCl(l,2) = phiT * twopi/real(l*(l+1),dp)**1.5/mK
+              P%PhiCl(l,3) = phiE * twopi/real(l*(l+1),dp)**1.5/mK
+             end if
+             else
              P%PhiCl(l,1) = phi/real(l,dp)**4/1e12/COBE_CMBTemp**2
              P%PhiCl(l,2) = phiT/real(l,dp)**3/1e6/COBE_CMBTemp/mK
+             end if
          end if
        end if
        enddo
@@ -895,9 +912,7 @@ contains
 
     end if 
    if (wantphi) then
-     !Make phi with correct correlation to T, assume E-phi correlation is zero
-     !AL: Oct 07: fixed so we don't introduce spurious E-phi correlation
-     !Pointed out by Perotto, arXiv:astro-ph/0606227 (journal version)
+     !Make phi with correct correlation to T and E, AL May 2010
      do l=2, P%lmax
       if (P%Cl(l,1)==0) then
         tamp = 1.0
@@ -906,9 +921,9 @@ contains
       end if
       corr = P%PhiCl(l,2)/tamp
       if (wantpol >=3) then
-       Examp = corr*P%cl(l,C_C)*sqrt( tamp/(p%cl(l,C_E)*tamp - p%cl(l,C_C)**2))
+       Examp = (P%PhiCl(l,3)-corr*P%cl(l,C_C))*sqrt( tamp/(p%cl(l,C_E)*tamp - p%cl(l,C_C)**2))
        xamp = sqrt(max(0._sp, P%PhiCl(l,1) - corr*P%PhiCl(l,2) - Examp**2 ))
-       A%Phi(1,l,0) =  -Examp * A%Phi(1,l,0)
+       A%Phi(1,l,0) =  Examp * A%Phi(1,l,0)
        Examp = Examp/sqrt(2.0)
       else
         xamp = sqrt(max(0._sp,P%PhiCl(l,1) - corr*P%PhiCl(l,2)))
@@ -916,7 +931,7 @@ contains
       A%Phi(1,l,0) = A%Phi(1,l,0) + corr*A%TEB(1,l,0) + Gaussian1()*xamp
       xamp=  xamp/sqrt(2.0)
       do m = 1, l
-        if (wantpol >=3) A%Phi(1,l,m) =  -Examp * A%Phi(1,l,m) 
+        if (wantpol >=3) A%Phi(1,l,m) =  Examp * A%Phi(1,l,m) 
         A%Phi(1,l,m) = A%Phi(1,l,m) + corr*A%TEB(1,l,m) + cmplx(Gaussian1(),Gaussian1())*xamp
       end do
      end do 
