@@ -509,6 +509,15 @@ contains
   
   end subroutine HealpixAlm_Assign
 
+  subroutine HealpixAlm_Nullify(A)
+   Type(HealpixAlm) :: A
+
+     nullify(A%TEB)
+     nullify(A%SpinEB)
+     nullify(A%Phi)
+ 
+  end subroutine HealpixAlm_Nullify
+
 
   subroutine HealpixAlm_Free(A)
    Type(HealpixAlm) :: A
@@ -516,11 +525,9 @@ contains
 
      deallocate(A%TEB,stat=status)
      deallocate(A%SpinEB,stat=status)
-     nullify(A%TEB)
-     nullify(A%SpinEB)
      deallocate(A%Phi,stat=status)
-     nullify(A%Phi)
-
+     call HealpixAlm_Nullify(A)
+     
   end subroutine HealpixAlm_Free
 
   subroutine HealpixAlm_PhiOnly(A)
