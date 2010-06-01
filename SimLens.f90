@@ -82,6 +82,9 @@ program SimLensCMB
 
  if (H%MpiID ==0) then !if we are main thread
   !All but main thread stay in HealpixInit
+ 
+  call HealpixPower_nullify(P)
+  call HealpixAlm_nullify(A)
 
   call HealpixPower_ReadFromTextFile(P,cls_file,lmax,pol=.true.,dolens = .true.)
   !Reads in unlensed C_l text files as produced by CAMB (or CMBFAST if you aren't doing lensing)
