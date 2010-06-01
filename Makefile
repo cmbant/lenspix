@@ -6,7 +6,7 @@ F90C     = ifort
 healpix = $(HEALPIX)
 LAPACKL = -mkl=sequential -lmkl_lapack -lmpi -lhealpix
 
-FFLAGS = -ip -O3 -fpp -error-limit 5 -DMPIPIX -DMPI -DTHREEJ -heap-arrays
+FFLAGS = -O3 -ip -fpp -error-limit 5 -DMPIPIX -DMPI -DTHREEJ -heap-arrays
 
 ifndef CFITSIO
 cfitsio = /usr/local/cfitsio/intel10/64/3.040/lib
@@ -16,7 +16,7 @@ endif
 
 #cosmos seems to have only openmp healpix installed
 ifeq ($(COSMOHOST),cosmos)
-FFLAGS += -openmp
+LINKFLAGS = -openmp
 endif
 
 F90FLAGS = $(FFLAGS) -I$(INCLUDE) -I$(healpix)/include -L$(cfitsio) -L$(healpix)/lib $(LAPACKL) -lcfitsio
@@ -43,7 +43,7 @@ SimLens.o: HealpixVis.o inifile.o
 
 
 simlens: $(OBJFILES) 	
-	$(F90C) -o simlens $(OBJFILES) $(F90FLAGS)
+	$(F90C) -o simlens $(OBJFILES) $(F90FLAGS) $(LINKFLAGS)
 
 clean:
 	rm -f *.o* *.e* *.mod *.d *.pc *.obj core* *.il
