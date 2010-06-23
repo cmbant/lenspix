@@ -3,6 +3,7 @@
 
 !April 2006: fix to TList_RealArr_Thin
 !March 2008: fix to Ranges
+!June 2010: fixed bug in  DeleteFile gradually using up file units
 !This version Mar 2008
 
  module Ranges
@@ -1445,14 +1446,13 @@
     character(LEN=*), intent(IN) :: aname
     integer file_id 
 
-     file_id = new_file_unit()
-
-     open(unit = file_id, file = aname, err = 2)
-     close(unit = file_id, status = 'DELETE')
- 2   return
-
-     file_units(file_id) = .false.
-    
+     if (FileExists(aname)) then
+      file_id = new_file_unit()
+      open(unit = file_id, file = aname, err = 2)
+      close(unit = file_id, status = 'DELETE')
+ 2    file_units(file_id) = .false.
+     end if
+     
   end subroutine DeleteFile
 
 

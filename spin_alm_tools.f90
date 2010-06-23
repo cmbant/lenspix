@@ -198,7 +198,7 @@ module spinalm_tools
             alm2LensedmapInterpCyl, interp_basic, interp_cyl , GeteTime, &
             division_equalrows, division_equalpix, division_balanced, HealpixMapArray, &
             HealpixCrossPowers, HealpixAllCl, maparray2scalcrosspowers,maparray2crosspowers, &
-            HealpixCrossPowers_Free, healpix_wakeMPI, healpix_sleepMPI
+            HealpixCrossPowers_Free, healpix_wakeMPI, healpix_sleepMPI, scalalm2bispectrum
 contains
 
  function GeteTime()
@@ -7562,6 +7562,260 @@ contains
   end subroutine polalm2map
 
 
+   !=======================================================================
+  subroutine scalalm2bispectrum(H, inlmax, inlmax_bi, inL1_max, alm, InSlice)
+    !=======================================================================
+    ! calculate bispectrum estimator by taking real space products of map rings
+    !=======================================================================
+    use MPIstuff
+    use AMLUtils, only : GetThreeJs   
+    Type (HealpixInfo) :: H
+
+    INTEGER(I4B) :: nsmax
+    INTEGER(I4B), INTENT(IN) :: inlmax, inL1_max, inlmax_bi
+    COMPLEX(SPC), INTENT(IN),  DIMENSION(:,:,:) :: alm
+    REAL(DP), INTENT(IN), target :: InSlice(inlmax_bi,inL1_max)
+    COMPLEX(SPC), DIMENSION(:), allocatable :: alm2
+
+    INTEGER(I4B) :: l, m, ith, scalem, scalel, nlmax, lmax_bi          ! alm related
+    INTEGER(I4B) :: nph, kphi0                         ! map related
+
+    REAL(DP) :: cth, sth, dth1, dth2, dst1
+    REAL(DP) :: a_rec, lam_mm, lam_lm, lam_0, lam_1, lam_2
+    REAL(DP) :: f2m, corfac
+    COMPLEX(DPC) :: factor, factor2
+    integer L1_max
+
+    CHARACTER(LEN=*), PARAMETER :: code = 'SCALALM2BISPECTRUM'
+    COMPLEX(DPC), allocatable :: b_north(:,:), b_flipped(:)
+    INTEGER(I4B) :: mmax_ring !,  par_lm
+    integer nalms, a_ix
+    integer L1,L2,L3, min_l, max_l
+    real(DP) aring1(0:4*H%nside-1),aring2(0:4*H%nside-1), tmp
+    REAL(DP), pointer :: Slice(:,:)
+    REAL(DP), allocatable :: a3j(:)
+    REAL(SP), allocatable :: ring(:,:)
+    integer, parameter :: L1_min=4, lmin_calc=1200
+#ifdef MPIPIX    
+    double precision Initime
+    integer status
+#endif      
+!=======================================================================
+  
+     nsmax = H%nside
+     nlmax = inlmax
+     L1_Max = inL1_max
+     lmax_bi=inlmax_bi
+
+#ifdef MPIPIX
+    StartTime = Getetime()
+    iniTime = StartTime
+    if (H%MpiId==0) then 
+     print *,code //': Sending to farm ' 
+     call SendMessages(H,code)
+    end if
+    call SyncInts(nlmax,L1_Max,lmax_bi)
+#endif
+     nalms = ((nlmax+1)*(nlmax+2))/2   
+     allocate(alm2(nalms))
+     if (H%MpiId==0) then
+      call Alm2PackAlm(alm,alm2,nlmax)
+      Slice=>InSlice
+     else
+      allocate(Slice(lmax_bi,L1_max))
+     end if
+     Slice=0
+    
+#ifdef MPIPIX
+     call MPI_BCAST(alm2,SIze(alm2),CSP_MPI, 0, MPI_COMM_WORLD, ierr) 
+     if(DebugMsgs>1) print *,code //': Got alm ',H%MpiId, GeteTime() - StartTime
+#endif
+
+    call HealpixInitRecfac(H,nlmax)
+ 
+    dth1 = 1.0_dp / (3.0_dp*DBLE(nsmax)**2)
+    dth2 = 2.0_dp / (3.0_dp*DBLE(nsmax))
+    dst1 = 1.0_dp / (SQRT(6.0_dp) * DBLE(nsmax) )
+
+    allocate(b_north(0:H%lmax,0:H%lmax))
+    allocate(b_flipped(0:H%lmax))
+    b_north=0
+    allocate(ring(0:4*H%nside-1,0:H%lmax))
+    
+    do ith =H%ith_start(H%MpiId), H%ith_end(H%MpiId)  
+       !        cos(theta) in the pixelisation scheme
+
+       if (ith.lt.nsmax) then  ! polar cap (north)
+          cth = 1.0_dp  - DBLE(ith)**2 * dth1
+          nph = 4*ith
+          kphi0 = 1
+          sth = SIN( 2.0_dp * ASIN( ith * dst1 ) ) ! sin(theta)
+       else                   ! tropical band (north) + equator
+          cth = DBLE(2*nsmax-ith) * dth2
+          nph = 4*nsmax
+          kphi0 = MOD(ith+1-nsmax,2)
+          sth = DSQRT((1.0_dp-cth)*(1.0_dp+cth)) ! sin(theta)
+       endif
+       !        -----------------------------------------------------
+       !        for each theta, and each m, computes
+       !        b(m,theta) = sum_over_l>m (lambda_l_m(theta) * a_l_m) 
+       !        ------------------------------------------------------
+       !        lambda_mm tends to go down when m increases (risk of underflow)
+       !        lambda_lm tends to go up   when l increases (risk of overflow)
+
+       mmax_ring = get_mmax(nlmax,sth) 
+
+       lam_mm = sq4pi_inv ! lambda_00
+       scalem=1
+       a_ix = 0
+       do m = 0, mmax_ring
+          f2m = 2.0_dp * m
+
+          !           ---------- l = m ----------
+!          par_lm = 1  ! = (-1)^(l+m)
+          if (m >= 1) then ! lambda_0_0 for m>0
+             lam_mm = -lam_mm*sth*dsqrt((f2m+1.0_dp)/f2m)
+          endif
+          if (abs(lam_mm).lt.UNFLOW) then
+             lam_mm=lam_mm*OVFLOW
+             scalem=scalem-1
+          endif
+          corfac = ScaleFactor(scalem)*lam_mm/OVFLOW
+  
+          lam_lm = corfac
+          a_ix = a_ix + 1
+          b_north(m,m) = lam_lm * alm2(a_ix)
+         
+          !           ---------- l > m ----------
+          lam_0 = 0.0_dp
+          lam_1 = 1.0_dp 
+          scalel=0
+          a_rec = H%recfac(a_ix)
+          lam_2 = cth * lam_1 * a_rec
+
+          do l = m+1, nlmax-1, 2
+             
+            a_ix = a_ix+1
+
+            lam_0 = lam_1 / a_rec
+            lam_1 = lam_2
+    
+            a_rec = H%recfac(a_ix)
+            lam_2 = (cth * lam_1 - lam_0) * a_rec
+            
+            factor = (lam_1*corfac) * alm2(a_ix)
+            factor2 = (lam_2*corfac) * alm2(a_ix+1)
+
+            b_north(l,m) = factor
+            b_north(l+1,m) = factor2
+            
+            lam_0 = lam_1 / a_rec
+            lam_1 = lam_2
+            a_ix = a_ix+1
+            a_rec = H%recfac(a_ix)
+            lam_2 = (cth * lam_1 - lam_0) * a_rec
+           
+             if (abs(lam_1+lam_2) > OVFLOW) then
+                lam_0=lam_0/OVFLOW
+                lam_1=lam_1/OVFLOW
+                lam_2 = (cth * lam_1 - lam_0) * a_rec
+                scalel=scalel+1
+                corfac = ScaleFactor(scalem+scalel)*lam_mm/OVFLOW
+             elseif (abs(lam_1+lam_2) < UNFLOW) then
+                lam_0=lam_0*OVFLOW
+                lam_1=lam_1*OVFLOW
+                lam_2 = (cth * lam_1 - lam_0) * a_rec 
+                scalel=scalel-1
+                corfac = ScaleFactor(scalem+scalel)*lam_mm/OVFLOW
+             endif
+          enddo
+          if (mod(nlmax-m,2)==1) then
+                 a_ix = a_ix+1
+                 b_north(nlmax,m) = corfac*lam_2*alm2(a_ix)
+          end if
+
+       enddo
+ 
+       do L=L1_min,lmax_bi,L1_min
+        if (L > L1_max .and. L<lmin_calc) cycle
+        b_flipped = b_north(L,:)
+        call spinring_synthesis(H,nlmax,b_flipped,nph,ring(0,L),kphi0,min(L,mmax_ring))   ! north hemisph. + equator
+       end do
+        
+       tmp = pi / (3.0_dp * nsmax * nsmax)
+       if (ith < 2*nsmax) then
+        !Add north and south
+          tmp=tmp * 2.d0
+       end if         
+       do L1=L1_min,L1_max,L1_min
+        aring1(0:nph-1) = ring(0:nph-1,L1)         
+        do L2=L1,lmax_bi,L1_min
+         if (L2<lmin_calc) cycle
+         aring2(0:nph-1) = aring1(0:nph-1) *ring(0:nph-1,L2) 
+         L3=L2+L1
+         if (L3>lmax_bi) cycle
+         Slice(L2,L1)=Slice(L2,L1)+ tmp*sum(aring2(0:nph-1)*ring(0:nph-1,L3))
+   
+!         min_l = max(abs(l1-l2),l2)
+!         if (mod(l1+l2+min_l,2)/=0) then
+!              min_l = min_l+1
+!         end if 
+!         max_l = min(nlmax,L1+L2) 
+!        
+!         do l3=min_l,max_l ,2
+!          a_ix=a_ix+1
+!          Bispectrum(a_ix,L1)=Bispectrum(a_ix,L1) + sum(aring2(0:nph-1)*ring(0:nph-1,L3))
+!         end do !L3
+        end do  !L2
+       end do  !L1  
+ 
+  
+       
+    enddo    ! loop on cos(theta)
+
+    !     --------------------
+    !     free memory and exit
+    !     --------------------
+    call healpixFreeRecFac(H)
+    deallocate(ring)
+    deallocate(b_north,b_flipped)
+    deallocate(alm2)
+#ifdef MPIPIX
+    if(DebugMsgs>1) print *,code //' Gather ',H%MpiId
+    
+    StartTime = Getetime()
+    if (H%MpiSize>1) then
+    
+     if (H%MpiId==0) then
+      call MPI_REDUCE(MPI_IN_PLACE,Slice,size(Slice),MPI_DOUBLE_PRECISION,MPI_SUM,0,MPI_COMM_WORLD,l) 
+     else
+      call MPI_REDUCE(Slice,MPI_IN_PLACE,size(Slice),MPI_DOUBLE_PRECISION,MPI_SUM,0,MPI_COMM_WORLD,l) 
+      deallocate(Slice)
+     end if
+    
+    end if
+    
+    if (DebugMsgs>1) print *,code //' Done Reduce ',H%MpiId, Getetime()-StartTime
+    if (DebugMsgs>0 .and. H%MpiId==0) print *,code //' Time :', GeteTime()-IniTime
+#endif
+   if (H%MpiID==0) then
+      allocate(a3j(0:lmax_bi*2+1))
+      do L1=L1_min,L1_max, L1_min
+       do L2= L1, lmax_bi, L1_min
+         if (L2<lmin_calc) cycle
+         L3=L2+L1
+         if (L3>lmax_bi) cycle
+         call GetThreeJs(a3j(abs(l2-l1)),l1,l2,0,0)
+         tmp = real((2*L1+1)*(2*L2+1),dp)*(2*L3+1)/fourpi 
+         Slice(L2,L1)=Slice(L2,L1) / a3j(L3)**2/tmp 
+        end do
+       end do 
+      deallocate(a3j) 
+   end if
+!   
+  end subroutine scalalm2bispectrum
+
+
 
  subroutine PackAlm2Alm(almin,almout, nlmax)
    integer, intent (in) :: nlmax
@@ -7697,10 +7951,11 @@ subroutine PackTEB2TEB(almin,almout, nlmax)
     REAL(SP),   DIMENSION(1,3) :: dummymapTQU
     COMPLEX(SPC),   DIMENSION(1) :: dummymapC
     COMPLEX(SPC),   DIMENSION(1,1,1)  :: dummyalm
+    REAL(DP), DIMENSION(1,1) :: dummyslice
     Type (HealpixMapArray) :: dummymaps(1)
     Type(HealpixPackedScalAlms) :: dummyscalalms
     Type(HealpixPackedAlms) :: dummyalms     
-    integer i
+    integer :: i = 0
 
      do
       Msg = ''
@@ -7743,6 +7998,8 @@ subroutine PackTEB2TEB(almin,almout, nlmax)
           call  maparray2packedscalalms(H,i, dummymaps, dummyscalalms, 1, .false.)
       else if (Msg=='MAPARRAY2PACKEDPOLALMS') then
           call  maparray2packedpolalms(H,i, dummymaps, dummyalms, 1, .false.)
+      else if (Msg=='SCALALM2BISPECTRUM') then
+          call  scalalm2bispectrum(H, i, i, i, dummyalm, dummyslice)
       end if
      end do 
    
