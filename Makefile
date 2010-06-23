@@ -1,21 +1,25 @@
-#You will need to edit the LAPACKL paths, and edit the options if you are
-#not using v11+ intel ifort
+#now using v11+ intel ifort
 
 #Intel. Note heap-arrays needs v10+ of compiler, and avoids Seg Faults for large arrays
-F90C     = mpif90
+F90C     = ifort
 
-FFLAGS = -ip -O3 -fpp -error-limit 5 -DMPIPIX -DMPI -heap-arrays -mkl=parallel
-#use these lines instead for non-MPI runs
-#F90C     = ifort 
-#FFLAGS =  -ip -O3 -fpp -error-limit 5 -heap-arrays -mkl=parallel
-LAPACKL = -L/usr/local/cfitsio/intel10/64/3.040/lib \
-	 -L/usr/local/healpix/intel10/64/2.01/serial/lib \
-	 -I/usr/local/healpix/intel10/64/2.01/serial/include \
-	 -lhealpix -lcfitsio -lmkl_lapack -lguide -lpthread 
+healpix = $(HEALPIX)
+LAPACKL = -mkl=sequential -lmkl_lapack -lmpi -lhealpix
 
+FFLAGS = -O3 -ip -fpp -error-limit 5 -DMPIPIX -DMPI -DTHREEJ -heap-arrays
 
+ifndef CFITSIO
+cfitsio = /usr/local/cfitsio/intel10/64/3.040/lib
+else
+cfitsio = $(CFITSIO)
+endif
 
-F90FLAGS = $(FFLAGS) -I$(INCLUDE) $(LAPACKL)
+#cosmos seems to have only openmp healpix installed
+ifeq ($(COSMOHOST),cosmos)
+LINKFLAGS = -openmp
+endif
+
+F90FLAGS = $(FFLAGS) -I$(INCLUDE) -I$(healpix)/include -L$(cfitsio) -L$(healpix)/lib $(LAPACKL) -lcfitsio
 
 OBJFILES= toms760.o inifile.o utils.o spin_alm_tools.o \
    HealpixObj.o HealpixVis.o SimLens.o
@@ -39,7 +43,7 @@ SimLens.o: HealpixVis.o inifile.o
 
 
 simlens: $(OBJFILES) 	
-	$(F90C) -o simlens $(OBJFILES) $(F90FLAGS)
+	$(F90C) -o simlens $(OBJFILES) $(F90FLAGS) $(LINKFLAGS)
 
 clean:
 	rm -f *.o* *.e* *.mod *.d *.pc *.obj core* *.il
