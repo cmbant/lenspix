@@ -1,8 +1,6 @@
-!To Do: check pole_edge, probably should be 1..npix, not npix..1
-
 !MPI Healpix routines, including generation of spin-s maps, 
 !mapping gradients of scalars and the exact and approx weak lensed CMB 
-!Antony Lewis 2004-2008, Based on Healpix 2
+!Antony Lewis 2004-2010, Based on Healpix 2
 
 !Requires linking to Healpix libraries:
 !See http://www.eso.org/science/healpix/
@@ -21,6 +19,7 @@
 !Nov 2007: added bicubic interpolation, temp only, speedups
 !Dec 2007: multiple map transforms, reduced memory requirements
 !Jan 2008: further memory reductions for non-lensed; one MPI thread workarounds for scalar
+!Oct 2010: corrected approximate handling of pole region interpolation (tiny area, virtually no effect)
 
 module MPIstuff
 implicit none
@@ -5410,8 +5409,15 @@ contains
     if (pole_edge>0) then
       do ith = -pole_edge,-1
        !edge from over N/S pole for interpolation
-       high_res(0:n_phi_cyl-1,ith) = high_res(n_phi_cyl-1:0:-1 ,-ith-1)   
-       high_res(0:n_phi_cyl-1,cyl_th_end_ix-ith ) = high_res(n_phi_cyl-1:0:-1 ,cyl_th_end_ix+ith+1)   
+        
+        high_res(0:n_phi_cyl/2-1,ith) = high_res(n_phi_cyl-n_phi_cyl/2:n_phi_cyl-1 ,-ith-1) 
+        high_res(n_phi_cyl/2:n_phi_cyl-1,ith) = high_res(0:n_phi_cyl-n_phi_cyl/2-1,-ith-1) 
+        
+        high_res(0:n_phi_cyl/2-1,cyl_th_end_ix-ith ) = high_res(n_phi_cyl-n_phi_cyl/2:n_phi_cyl-1,cyl_th_end_ix+ith+1)   
+        high_res(n_phi_cyl/2:n_phi_cyl-1,cyl_th_end_ix-ith ) = high_res(0:n_phi_cyl-n_phi_cyl/2-1,cyl_th_end_ix+ith+1)   
+    
+   !    high_res(0:n_phi_cyl-1,ith) = high_res(n_phi_cyl-1:0:-1 ,-ith-1)   
+   !    high_res(0:n_phi_cyl-1,cyl_th_end_ix-ith ) = high_res(n_phi_cyl-1:0:-1 ,cyl_th_end_ix+ith+1)   
       end do     
     end if
     !Patch in from both ends in phi so nice and smooth for interpolation 
@@ -5900,8 +5906,12 @@ contains
     if (pole_edge>0) then
       do ith = -pole_edge,-1
        !edge from over N/S pole for interpolation
-       high_res(0:n_phi_cyl-1,ith,:) = high_res(n_phi_cyl-1:0:-1 ,-ith-1,:)   
-       high_res(0:n_phi_cyl-1,cyl_th_end_ix-ith,: ) = high_res(n_phi_cyl-1:0:-1 ,cyl_th_end_ix+ith+1,:)   
+       high_res(0:n_phi_cyl/2-1,ith,:) = high_res(n_phi_cyl-n_phi_cyl/2:n_phi_cyl-1 ,-ith-1,:) 
+       high_res(n_phi_cyl/2:n_phi_cyl-1,ith,:) = high_res(0:n_phi_cyl-n_phi_cyl/2-1,-ith-1,:) 
+        
+       high_res(0:n_phi_cyl/2-1,cyl_th_end_ix-ith,:) = high_res(n_phi_cyl-n_phi_cyl/2:n_phi_cyl-1,cyl_th_end_ix+ith+1,:)   
+       high_res(n_phi_cyl/2:n_phi_cyl-1,cyl_th_end_ix-ith,:) = high_res(0:n_phi_cyl-n_phi_cyl/2-1,cyl_th_end_ix+ith+1,:)   
+  
       end do     
     end if
     !Patch in from both ends in phi so nice and smooth for interpolation 
