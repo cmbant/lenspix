@@ -67,6 +67,18 @@
 
   end subroutine Ranges_Nullify
 
+  subroutine Ranges_Assign(R,Rin)
+   Type(Regions) R, Rin
+
+    call Ranges_Init(R)
+    R = Rin
+    nullify(R%points,R%dpoints)
+    if (associated(Rin%points)) then
+      call Ranges_GetArray(R, associated(Rin%dpoints))
+    end if
+  
+  end subroutine Ranges_Assign
+
    function Ranges_IndexOf(Reg, tau) result(pointstep)
       Type(Regions), intent(in), target :: Reg
       Type(Region), pointer :: AReg
@@ -2050,7 +2062,6 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
       integer, parameter :: dl = KIND(1.d0)
       integer, intent(in) :: l2in,l3in, m2in,m3in
       real(dl), dimension(*) :: thrcof
-#ifdef THREEJ
       INTEGER, PARAMETER :: i8 = 8
       integer(i8) :: l2,l3,m2,m3
       integer(i8) :: l1, m1, l1min,l1max, lmatch, nfin, a1, a2
@@ -2324,13 +2335,6 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
          thrcof(n) = cnorm*thrcof(n)
       end do
       return 
-#else
-   call MpiStop('must compile with -DTHREEJ to use 3j routine')
-
-!Just prevent unused variable warnings:
-   thrcof(1)=l2in+l3in+m2in+m3in
-#endif
-
 
     end subroutine GetThreeJs
 
@@ -2538,13 +2542,14 @@ module Random
 
 contains
    
-  subroutine initRandom(i)
+  subroutine initRandom(i, i2)
   use AMLUtils
 #ifdef ZIGGURAT
   use Ziggurat
 #endif
   implicit none
   integer, optional, intent(IN) :: i
+  integer, optional, intent(IN) :: i2
   integer seed_in,kl,ij
   character(len=10) :: fred
   real :: klr
@@ -2555,7 +2560,12 @@ contains
     seed_in = -1
    end if
       if (seed_in /=-1) then
-       kl = 9373
+       if (present(i2)) then
+        kl=i2
+        if (i2 > 30081) call MpiStop('initRandom:second seed too large')
+       else
+        kl = 9373
+       end if
        ij = i
       else
        call system_clock(count=ij)

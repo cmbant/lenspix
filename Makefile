@@ -6,7 +6,7 @@ F90C     = ifort
 healpix = $(HEALPIX)
 LAPACKL = -mkl=sequential -lmkl_lapack -lmpi -lhealpix
 
-FFLAGS = -O3 -ip -fpp -error-limit 5 -DMPIPIX -DMPI -DTHREEJ -heap-arrays
+FFLAGS = -O3 -ip -fpp -error-limit 5 -DMPIPIX -DMPI -heap-arrays
 
 ifndef CFITSIO
 cfitsio = /usr/local/cfitsio/intel10/64/3.040/lib
