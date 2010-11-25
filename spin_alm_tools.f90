@@ -20,6 +20,7 @@
 !Dec 2007: multiple map transforms, reduced memory requirements
 !Jan 2008: further memory reductions for non-lensed; one MPI thread workarounds for scalar
 !Oct 2010: corrected approximate handling of pole region interpolation (tiny area, virtually no effect)
+!Nov 2010: fixes for bugs that only showed up in gfortran (thanks to Giancarlo de Gasperis)
 
 module MPIstuff
 implicit none
@@ -202,19 +203,13 @@ contains
 
  function GeteTime()
       use MPIStuff
+      double precision GeteTime
 #ifndef MPIPIX
-#ifdef __INTEL_COMPILER_BUILD_DATE      
-      USE IFPORT
-#else      
-      external etime
       real etime
-#endif
-      real tarray(2)
-      double precision GeteTime
 
-      GeteTime = etime(tarray)
+      call cpu_time(etime)    
+      GeteTime = etime
 #else
-      double precision GeteTime
       GeteTime = MPI_WTime()
 #endif
  end function GeteTime
@@ -5719,6 +5714,7 @@ contains
        !        cos(theta) in the pixelisation scheme
        !put pixels starting on phi=0, so kphi0=1 and first pixel centre at dtheta_cyl/2    
            
+           
        cth = cos((ith+0.5_dp)*dtheta_cyl)
        sth = sin((ith+0.5_dp)*dtheta_cyl)
        kphi0 = 1
@@ -5855,11 +5851,11 @@ contains
        enddo
 !North
        call spinring_synthesis(H_res,nlmax,b_north,n_phi_cyl,ring,kphi0,mmax_ring)   
-       high_res(0:n_phi_cyl-1,ith,1) = ring(0:nph-1)
+       high_res(0:n_phi_cyl-1,ith,1) = ring(0:n_phi_cyl-1)
        call spinring_synthesis(H_res,nlmax, b_north_Q, n_phi_cyl, ring, kphi0,mmax_ring)
-       high_res(0:n_phi_cyl-1,ith,2) = ring(0:nph-1)
+       high_res(0:n_phi_cyl-1,ith,2) = ring(0:n_phi_cyl-1)
        call spinring_synthesis(H_res,nlmax, b_north_U, n_phi_cyl, ring, kphi0,mmax_ring)
-       high_res(0:n_phi_cyl-1,ith,3) = ring(0:nph-1)
+       high_res(0:n_phi_cyl-1,ith,3) = ring(0:n_phi_cyl-1)
 !South  
        call spinring_synthesis(H_res,nlmax, b_south, n_phi_cyl, ring, kphi0,mmax_ring)
        high_res(0:n_phi_cyl-1,cyl_th_end_ix - (ith-cyl_start_ix) ,1) = ring(0:n_phi_cyl-1)

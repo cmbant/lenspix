@@ -140,7 +140,7 @@ contains
      logical tensors, dolens2, pol2
      integer, parameter :: io_unit= 1
      character(LEN=200) :: InLine
-     real(sp) test(8)
+     real(sp) test(9)
      real(sp), parameter :: COBE_CMBTemp = 2.726
 
      open(unit=io_unit,file=f,form='formatted',status='old')

@@ -85,6 +85,8 @@ program SimLensCMB
  
   call HealpixPower_nullify(P)
   call HealpixAlm_nullify(A)
+  call HealpixMap_nullify(GradPhi)
+  call HealpixMap_nullify(M)
 
   call HealpixPower_ReadFromTextFile(P,cls_file,lmax,pol=.true.,dolens = .true.)
   !Reads in unlensed C_l text files as produced by CAMB (or CMBFAST if you aren't doing lensing)
