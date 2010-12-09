@@ -129,42 +129,43 @@ module spinalm_tools
   Type HealpixInfo
      integer :: nside, lmax, Lastlmax
      logical pol
-     REAL(KIND=DP), DIMENSION(:,:), Pointer :: w8ring_TQU
-     INTEGER(I8B), DIMENSION(:), pointer :: istart_south, istart_north  
-     COMPLEX(DPC),DIMENSION(:), pointer :: trig
-     REAL(DP), DIMENSION(:), Pointer :: recfac, Lambda_slm
+     REAL(KIND=DP), DIMENSION(:,:), Pointer :: w8ring_TQU  => NULL() 
+     INTEGER(I8B), DIMENSION(:), pointer :: istart_south  => NULL() , istart_north => NULL()   
+     COMPLEX(DPC),DIMENSION(:), pointer :: trig  => NULL() 
+     REAL(DP), DIMENSION(:), Pointer :: recfac  => NULL() , Lambda_slm  => NULL() 
      integer MpiId, MPISize, MpiStat, last_nph
-     integer(I4B), dimension(:), pointer :: ith_start, ith_end
-     integer, dimension(:), pointer :: North_Start, North_Size, South_Start, South_Size
+     integer(I4B), dimension(:), pointer :: ith_start => NULL() , ith_end => NULL() 
+     integer, dimension(:), pointer :: North_Start => NULL() , North_Size => NULL() , &
+        South_Start => NULL() , South_Size => NULL() 
   end type HealpixInfo
 
   Type HealpixMapArray
-    REAL(SP), DIMENSION(:,:), pointer :: M
+    REAL(SP), DIMENSION(:,:), pointer :: M  => NULL() 
   end Type HealpixMapArray
 
  type HealpixAllCl
   !All (a^i a^j) C_l
   !Index 0:lmax, i, j, where i,j are T E B
-    real(SP), dimension(:,:,:), pointer :: Cl
+    real(SP), dimension(:,:,:), pointer :: Cl  => NULL() 
  end type HealpixAllCl 
   
  type HealpixCrossPowers
   !Array of cross-power spectra
   integer nmaps, lmax, npol 
-  Type(HealpixAllCl), dimension(:,:), pointer :: Ps
+  Type(HealpixAllCl), dimension(:,:), pointer :: Ps  => NULL() 
  end type HealpixCrossPowers
 
  type HealpixPackedScalAlms
-   COMPLEX(SPC), dimension(:,:), pointer :: alms
+   COMPLEX(SPC), dimension(:,:), pointer :: alms  => NULL() 
  end type HealpixPackedScalAlms
 
  type HealpixPackedAlms
-   COMPLEX(SPC), dimension(:,:,:), pointer :: alms
+   COMPLEX(SPC), dimension(:,:,:), pointer :: alms  => NULL() 
  end type HealpixPackedAlms
   
 
   Type LensGradients
-     COMPLEX(SPC), DIMENSION(:), pointer :: grad_phiN, grad_phiS
+     COMPLEX(SPC), DIMENSION(:), pointer :: grad_phiN => NULL() , grad_phiS => NULL() 
   end  Type LensGradients  
 
   integer, parameter :: interp_edge = 2
@@ -2669,7 +2670,6 @@ contains
     integer map_ix
 #ifdef MPIPIX
     Type (HealpixMapArray), target :: dummymaps
-    Type (HealpixMapArray), pointer :: amap
     double precision Initime
 #endif
     !=======================================================================
@@ -2702,14 +2702,16 @@ contains
 
    do map_ix=1,nmaps
     if (H%MpiId==0) then
-     amap => maps(map_ix)
-    else
-     amap => dummymaps
-    end if
-    call MPI_SCATTERV(amap%M,H%North_Size, H%North_Start, &
+    call MPI_SCATTERV(maps(map_ix)%M,H%North_Size, H%North_Start, &
        SP_MPI, map2N(map_ix)%M(H%North_Start(H%MpiId),1),H%North_Size(H%MpiId),SP_MPI, 0 ,MPI_COMM_WORLD, ierr)
-    call MPI_SCATTERV(amap%M,H%South_Size, H%South_Start, &
+    call MPI_SCATTERV(maps(map_ix)%M,H%South_Size, H%South_Start, &
        SP_MPI, map2S(map_ix)%M(H%South_Start(H%MpiId),1),H%South_Size(H%MpiId),SP_MPI, 0 ,MPI_COMM_WORLD, ierr)
+    else
+     call MPI_SCATTERV(0,H%North_Size, H%North_Start, &
+       SP_MPI, map2N(map_ix)%M(H%North_Start(H%MpiId),1),H%North_Size(H%MpiId),SP_MPI, 0 ,MPI_COMM_WORLD, ierr)
+     call MPI_SCATTERV(0,H%South_Size, H%South_Start, &
+       SP_MPI, map2S(map_ix)%M(H%South_Start(H%MpiId),1),H%South_Size(H%MpiId),SP_MPI, 0 ,MPI_COMM_WORLD, ierr)
+    end if
    end do
    if (H%MpiId==0 .and. dofree) then
        allocate(map2N(nmaps),map2S(nmaps))
@@ -2881,7 +2883,7 @@ contains
       do map_ix=1,nmaps
        deallocate(map2N(map_ix)%M,map2S(map_ix)%M)
       end do
-      deallocate(map2S,map2N)
+      if (H%MpiId>0) deallocate(map2S,map2N)
     end if
     
     StartTime = Getetime()
@@ -3446,7 +3448,7 @@ contains
       do map_ix=1,nmaps
        deallocate(map2N(map_ix)%M,map2S(map_ix)%M)
       end do
-      deallocate(map2S,map2N)
+      if (H%MpiId>0) deallocate(map2S,map2N)
     end if
     starttime = getetime()
     if (H%MpiId==0) then

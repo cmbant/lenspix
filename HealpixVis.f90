@@ -14,13 +14,13 @@ module HealpixVis
   
   type HealpixPPM
     integer :: nx, ny
-    integer, dimension(:,:,:), pointer :: rgb
+    integer, dimension(:,:,:), pointer :: rgb  => NULL() 
   end type HealpixPPM
 
   type HealpixCMap
     integer :: n
-    real, dimension(:), pointer :: x
-    real, dimension(:,:), pointer :: rgb
+    real, dimension(:), pointer :: x  => NULL() 
+    real, dimension(:,:), pointer :: rgb  => NULL() 
   end type HealpixCMap
 
   real, dimension(3), parameter, private :: &

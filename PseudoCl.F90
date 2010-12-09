@@ -11,21 +11,21 @@ module PseudoCl
  Type TBeam
    logical :: beam_transfer
    real(dp) :: fwhm
-   real(dp), pointer :: beam(:)
+   real(dp), pointer :: beam(:) => NULL() 
  end type TBeam
 
  Type TChannel
   character(LEN=16) :: Name
   character(LEN=256) :: noise_file
   integer :: Count
-  real(dp), pointer  :: sig0(:)
+  real(dp), pointer  :: sig0(:)  => NULL() 
   real(dp) :: Ghz
   real(dp) :: PtSrcA !non-beam-smoothed C_l of fiducial point sources
-  Type(TBeam), pointer :: DetectorBeams(:)
-  Type(HealpixMap), pointer :: DetectorYearNoiseMaps(:,:)
+  Type(TBeam), pointer :: DetectorBeams(:)  => NULL() 
+  Type(HealpixMap), pointer :: DetectorYearNoiseMaps(:,:) => NULL() 
   Type(TBeam) :: Beam 
   Type(HealpixMap) :: NoiseMap
-  Type(HealpixPower), pointer :: NoiseP(:)
+  Type(HealpixPower), pointer :: NoiseP(:) => NULL() 
  end Type TChannel
 
  
@@ -34,36 +34,38 @@ module PseudoCl
    integer lmax
    integer nl
    logical has_pol
-   real(dp), dimension(:,:), pointer :: T, X, EE, EB   
-   real(dp), dimension(:,:), pointer ::  InvT,InvX, InvEE, InvEB
+   real(dp), dimension(:,:), pointer :: T => NULL() , X => NULL() , &
+                                        EE => NULL() , EB => NULL()    
+   real(dp), dimension(:,:), pointer ::  InvT => NULL() ,InvX => NULL() , &
+                                          InvEE => NULL() , InvEB => NULL() 
  end type TCouplingMatrix
 
  Type TCovMat
-   real(dp), dimension(:,:), pointer :: C
+   real(dp), dimension(:,:), pointer :: C  => NULL() 
  end Type TCovMat
 
  Type TCovMatArray
    integer ncl
-   Type(TCovMat), dimension(:,:), pointer :: Cov
+   Type(TCovMat), dimension(:,:), pointer :: Cov  => NULL() 
  end Type TCovMatArray
 
  Type TCovMatPolArray
    integer vec_size
-   Type(TCovMatArray), dimension(:,:), pointer :: Pol
+   Type(TCovMatArray), dimension(:,:), pointer :: Pol  => NULL() 
  end Type TCovMatPolArray
 
  Type TCovMatSet
    integer n, lmin, lmax
-   Type(TCovMat), dimension(:), pointer :: Cov
+   Type(TCovMat), dimension(:), pointer :: Cov  => NULL() 
  end Type TCovMatSet
 
 
  Type TClArray
-   Type(HealpixPower), dimension(:), pointer :: P
- end Type TClArray
+   Type(HealpixPower), dimension(:), pointer :: P  => NULL() 
+ end Type TClArray 
 
  Type TCouplingMatrixArray
-   Type(TCouplingMatrix), dimension(:), pointer :: M
+   Type(TCouplingMatrix), dimension(:), pointer :: M  => NULL() 
  end Type TCouplingMatrixArray
 
 
@@ -215,6 +217,7 @@ end subroutine TBeam_PowerSmooth2
     integer params(3)
     logical haspol
     Type(TMatrixType), dimension(:), allocatable :: Arr
+    Type(TMatrixType) dummyArr(1)
     integer nmat
     
     call GetMpiStat(MpiID, MpiSize)
@@ -239,9 +242,7 @@ end subroutine TBeam_PowerSmooth2
           Arr(i+2*n)%M = M(i)%X
          end if
        end do 
-    end if
-    call Matrix_InverseArrayMPI(Arr,nmat)
-    if (MpiID==0) then
+       call Matrix_InverseArrayMPI(Arr,nmat)
        do i=1,n
          M(i)%InvT => Arr(i)%M 
          do l=lmin,lmax
@@ -272,7 +273,7 @@ end subroutine TBeam_PowerSmooth2
 
          call Matrix_Mult_SymmRight(tmp,inv11,M(i)%InvEB,-1._dm)
               
-         deallocate(Inv11,tmp)
+         deallocate(Inv11,tmp,Arr)
          
           do l=lmin,lmax
                 M(i)%InvX(l,:)=M(i)%InvX(l,:)/(2*l+1)
@@ -282,7 +283,9 @@ end subroutine TBeam_PowerSmooth2
   
          end if
        end do 
-    end if    
+    else
+     call Matrix_InverseArrayMPI(DummyArr,nmat)
+    end if
   
   end subroutine PseudoCl_GetCouplingInversesArr
 
@@ -982,7 +985,7 @@ subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl
         
         rootT(:,channel) = sqrt(SmoothedP(channel)%Cl(lmin:lmax,C_T))
         if (dopol) then
-         if (nchannels >1) call MpiStop('not done multi-channel pol')
+!         if (nchannels >1) call MpiStop('not done multi-channel pol')
          rootE(:,channel) = sqrt(SmoothedP(channel)%Cl(lmin:lmax,C_E))
          rootB(:,channel) = sqrt(SmoothedP(channel)%Cl(lmin:lmax,C_B))
         end if
@@ -1073,6 +1076,14 @@ subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl
      
 
      if (dopol) then
+      !Added AvP Dec 2010
+      AvP%Cl(:,C_E) = (real(SmoothedP(chanx)%Cl(:,C_E),dp)*SmoothedP(chany)%Cl(:,C_E)* &
+                 real(SmoothedP(chanx2)%Cl(:,C_E),dp)*SmoothedP(chany2)%Cl(:,C_E) ) ** 0.25_dp
+      AvP%Cl(:,C_B) = (real(SmoothedP(chanx)%Cl(:,C_B),dp)*SmoothedP(chany)%Cl(:,C_B)* &
+                 real(SmoothedP(chanx2)%Cl(:,C_B),dp)*SmoothedP(chany2)%Cl(:,C_B) ) ** 0.25_dp
+      AvP%Cl(:,C_C)= PFid%Cl(:,C_C)* AvP%Cl(:,C_T)/PFid%Cl(:,C_T)
+      
+      
       rootE_11 = sqrt(rootE(:,chanx)*rootE(:,chanx2))
       rootE_12 = sqrt(rootE(:,chanx)*rootE(:,chany2))
       rootE_21 = sqrt(rootE(:,chany)*rootE(:,chanx2))
@@ -1321,7 +1332,6 @@ subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl
             !EX = EE ET
                        
             do l=lmin,lmax
-            !Should be using correct beam-averaged C_C, C_T here...
               if (PM_s_11_s_22/=0) C%C(lmin:lmax,l) =   C%C(lmin:lmax,l) + &
                 sqrt(AvP%Cl(l,C_E))*sqrt(AvP%Cl(lmin:lmax,C_E))*(AvP%Cl(lmin:lmax,C_C)+AvP%Cl(l,C_C) )/2* &
                                ( Xi(PM_s_11_s_22)%T(:,l))  
@@ -1617,7 +1627,7 @@ subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl
         call HealpixMap_Nullify(CovMaps(i))
       end do 
     
-      print *,'getting mask/noise powers'
+      print *,'getting mask/noise powers, ncovmaps =', ncovmaps
 
       NoiseScale = (HO_fourpi/dble(Channels(1)%NoiseMap%npix)) 
 !Power of w_i*w_j, w_i*w_j sigma^2
@@ -1659,7 +1669,7 @@ subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl
       end do 
       end do
          
-      call HealpixMapSet2CrossPowers(H, CovMaps, CovPowers, ncovmaps, lmax, free=.true.)
+      call HealpixMapSet2CrossPowers(H, CovMaps, CovPowers, ncovmaps, lmax, .true.)
       deallocate(CovMaps)
       
       print *,'PseudoCl_WeightsToCovPowers time:', GeteTime() -  IniTime 

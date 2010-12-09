@@ -25,10 +25,10 @@ module HealpixObj
  type HealpixMap
 
   integer(I4B) npix, nmaps, ordering, nside, type
-  REAL(SP), DIMENSION(:,:),   POINTER :: TQU
-  COMPLEX(SP), dimension(:), pointer :: SpinField
+  REAL(SP), DIMENSION(:,:),   POINTER :: TQU  => NULL() 
+  COMPLEX(SP), dimension(:), pointer :: SpinField => NULL() 
 !  REAL(SP), DIMENSION(:), pointer :: SpinQ, SpinU
-  REAL(SP), dimension(:), pointer :: Phi
+  REAL(SP), dimension(:), pointer :: Phi => NULL() 
   integer :: spin
   logical :: HasPhi
  end type HealpixMap
@@ -38,9 +38,9 @@ module HealpixObj
 
    integer(I4B) lmax, npol, spin
    logical HasPhi
-   COMPLEX(KIND=SPC), DIMENSION(:,:,:), pointer :: TEB    !T,E,B index, l,m 
-   COMPLEX(KIND=SPC), DIMENSION(:,:,:), pointer :: SpinEB  ! E,B index, l, m
-   COMPLEX(KIND=SPC), DIMENSION(:,:,:), pointer :: Phi !Has to be 3D array for Healpix defs
+   COMPLEX(KIND=SPC), DIMENSION(:,:,:), pointer :: TEB  => NULL()    !T,E,B index, l,m 
+   COMPLEX(KIND=SPC), DIMENSION(:,:,:), pointer :: SpinEB  => NULL()  ! E,B index, l, m
+   COMPLEX(KIND=SPC), DIMENSION(:,:,:), pointer :: Phi => NULL()  !Has to be 3D array for Healpix defs
 
  end type HealpixAlm
 
@@ -51,8 +51,8 @@ module HealpixObj
    !Phi is read in above units, but stored here as dimensionless
    integer(I4B) lmax
    logical pol, lens
-   REAL(SP), DIMENSION(:,:),   POINTER :: Cl
-   REAL(SP), DIMENSION(:,:),  POINTER :: PhiCl  
+   REAL(SP), DIMENSION(:,:),   POINTER :: Cl => NULL() 
+   REAL(SP), DIMENSION(:,:),  POINTER :: PhiCl   => NULL() 
 
  end  type HealpixPower
  
@@ -61,7 +61,7 @@ module HealpixObj
    integer order
    logical pol
    type(HealpixMap) degraded
-   type(HealpixMap), dimension(:), pointer :: details
+   type(HealpixMap), dimension(:), pointer :: details  => NULL() 
   
  end  type HaarComponents
 
@@ -1490,25 +1490,19 @@ contains
      
    end subroutine HealpixMapArray_Free
 
-   subroutine HealpixMapSet2CrossPowers(H, M, Pows, nmap, almax, free)
+   subroutine HealpixMapSet2CrossPowers(H, M, Pows, nmap, almax, dofree)
      integer, intent(in) :: nmap
      Type (HealpixInfo) :: H
      Type(HealpixMap), intent(in) :: M(nmap)
      Type(HealpixCrossPowers) :: Pows
      integer, intent(in) :: almax
      integer i
-     logical, intent(in), optional :: free
-     logical dofree
+     logical :: dofree
      Type(HealpixMapArray) :: maps(nmap)
 
 !Does not deallocate pows, assumed undefined
 
      if (nmap<0)  call MpiStop('HealpixMapSet2CrossPowers: must have one or more maps')
-     if (present(free)) then
-      dofree =.true.
-     else
-      dofree=.false.
-     end if
      do i=1,nmap
       call HealpixMap_ForceRing(M(i))
      end do
@@ -1520,7 +1514,7 @@ contains
 
      do i=1,nmap
         if(dofree) then
-         allocate(maps(i)%M(size(M(i)%TQU,1),size(M(i)%TQU,2)))
+         allocate(maps(i)%M(0:size(M(i)%TQU,1)-1,size(M(i)%TQU,2)))
          maps(i)%M = M(i)%TQU
          call HealpixMap_Free(M(i))
         else
