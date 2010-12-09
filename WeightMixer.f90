@@ -1,6 +1,8 @@
-!Code for simple simultation of hybrid Pseudo-Cl estiamtors
-!Assumes for simicity that polarization and temperature noise
-!and mask are the same (noise proportional with ENoiseFac)
+!Code for calculation of hybrid Pseudo-CL estimators
+!For original code see http://cosmologist.info/weightmixer/
+!Updated for polarization. Buch of other routines for misc purposes, not all well tested
+!This version: AL Dec 2010
+
 module WeightMixing
  use PseudoCl
  use HealpixObj
@@ -11,69 +13,112 @@ module WeightMixing
  use AMLUtils
  use PseudoCl
  use MatrixUtils
+ use SNModes
  implicit none
  character(LEN=*), parameter :: nulltest='nulltest'
  character(LEN=*), parameter :: pixtest='pixtest'
 
  character(LEN=256) :: data_dir = 'data/'
+ character(LEN=256) :: input_data_dir = ''
  character(LEN=256) :: w8name = '../Healpix_2.00/data/'
- integer, parameter :: max_detectors = 4 
+ character(LEN=256) :: data_var = ''
+ logical :: no_pix_window = .false.
+ integer, parameter :: max_detectors = 8 
  integer:: nside, healpix_res, lmin,lmax, npix
  logical :: want_pol, est_noise
  real(dp) :: apodize_mask_fwhm
+ integer :: pol_maps = 1
  logical :: sim_noise = .true., sim_signal = .true.
  logical :: fullsky_test = .false.
  logical :: uniform_noise = .false.
+ logical :: noise_from_hitcounts = .true.
  logical :: cross_spectra = .false.
+ logical :: pol_weights = .false.
  logical :: no_cache = .false.
- logical :: do_lowl_separation = .true. !project lowl map out of high-l one
  real(dp) :: ENoiseFac 
  real(dp) :: white_NL, white_NL_P !N_l when testing with white noise
+ 
+ logical :: want_cl
+ logical :: get_exact_cl
+ logical :: do_lowl_separation = .false. !project lowl map out of high-l one
+ integer :: exact_cl_lmin = 2, exact_cl_lmax =3
+ logical :: project_l01 = .true.
+ real(dp) :: low_l_fwhm = 7./60
  integer :: l_exact = 20
  integer :: l_exact_margin = 20 !50
  real(dp)  :: WellSupported = 0.99_dp
- real(dp) :: HighlNoiseBoost = 1.0_dp 
+ real(dp) :: exact_SN_cut = 1e-3_dp
+ character(LEN=12) :: WellSupported_txt, exact_SN_cut_txt, exact_tag
  real(dp) :: fake_noise = 0._dp
- character(LEN=3) :: map_unit = 'muK'
+ real :: noise_colour_factor = 0.0 !assume noise goes like 1+ noise_colour_factor/(2l+1)
+ 
+ integer :: zero_from_l = 0
+
+ character(LEN=256) :: map_unit = 'muK'
  real(dp) :: map_scale = 1._dp !mutiply map to get muK
  logical :: get_mean_likes = .false.
+ logical :: test_big_cut = .false.
 
  real(dp) :: noise_inv_fwhm = 0.d0
  real :: point_source_A = 0.d0
  real :: point_source_A_frac_error = 0.d0
-
+ 
  real(sp) :: noise
  character(LEN=256) :: file_stem
- character(LEN=256) :: beam_filename_format, noise_filename_format, combined_filename_format, year_filename_format
- character(LEN=256) :: fits_mask !0 and 1 foreground mask
+ character(LEN=256) :: beam_filename_format, channel_filename_format,detector_filename_format, year_filename_format
+ character(LEN=256) :: detector_noise_filename_format, year_noise_filename_format
+ character(LEN=256) :: fits_mask, fits_mask_pol !0 and 1 foreground mask
  character(LEN=256) :: processing_mask !optional mask says where hit counts are zero and must be zeroed
- character(LEN=256) :: inv_noise_map !Map to smooth to get 'inverse noise' weight map if noise_inv_fwhm /=0
-
-!Testing
+ integer :: processing_mask_map =2 !Was 2 for WMAP
+ character(LEN=256) :: noise_map_for_window !Map to smooth to get 'inverse noise' weight map if noise_inv_fwhm /=0
+ logical :: processing_mask_badpix  = .false. !true to get processing mask from bad pixels
+ !Testing
  character(LEN=256) :: check_cls_file1, check_cls_file2
 
  integer vec_size
  integer nchannels, nweights, nyears, InYears
  Type(TChannel), target, dimension(:), allocatable :: Channels
- Type(HealPixMap), dimension(:), target, allocatable :: WeightMaps
+ Type(HealPixMap), dimension(:), target, allocatable :: WeightMaps, WeightMapsPol, WeightMapsAll
  Type (TCouplingMatrix), dimension(:), pointer :: Coupler, XiMatrices
  Type(TCovMatSet), allocatable :: HybridMix(:)
  Type(HealpixMap) :: SmoothedNoise 
+
 contains
+
+  subroutine MapMulPolWeight(InMap,WeightMap,WeightMapPol,OutMap)
+    Type(HealpixMap), intent(in) :: InMap,WeightMap,WeightMapPol
+    Type(HealpixMap), intent(out) :: OutMap
+    integer i, j
+
+   call HealpixMap_ForceRing(InMap)
+   if (InMap%npix /= WeightMap%npix) call MpiStop('MapMulWeight: Map size mismatch')
+   call HealpixMap_Init(OutMap,InMap%npix,InMap%nmaps)
+   outMap%ordering  = ord_ring
+ 
+     do j=0, InMap%npix -1
+      OutMap%TQU(j,1) = InMap%TQU(j,1) * WeightMap%TQU(j,1)
+      if (InMap%nmaps>1) then
+       OutMap%TQU(j,2) = InMap%TQU(j,2) * WeightMapPol%TQU(j,1)
+       OutMap%TQU(j,3) = InMap%TQU(j,3) * WeightMapPol%TQU(j,1)
+      end if  
+     end do
+
+  end subroutine MapMulPolWeight
 
 
  subroutine AnalyseMap(H, Maps, HybridP)
   Type(HealpixInfo) :: H
   Type(HealpixMap) :: Maps(:)
   Type(HealpixPower) :: HybridP, CHat
-  Type(HealpixCrossPowers) :: CovPowers, MaskPowers, PCls
+  Type(HealpixCrossPowers) :: CovPowers, PCls
  
   Type(HealPixMap):: WMaps(nweights*nchannels)
   integer chan1, chan2, channel,nmaps
   integer Pix, ix, x,y
   integer i,j
   real(dp) StTime
-      
+  
+     
     nmaps = nweights*nchannels
   
     ix = 0
@@ -81,12 +126,16 @@ contains
     do i=1, nweights
           ix =ix + 1
           call HealpixMap_Nullify(WMaps(ix))
-          call HealpixMapMulCut(Maps(Channel),WeightMaps(i),WMaps(ix), 1)
-            !   call HealpixVis_Map2ppmfile(WeightMaps(i), 'outfiles/weightmap.ppm')
+          if (pol_weights) then
+           call MapMulPolWeight(Maps(Channel),WeightMaps(i),WeightMapsPol(i),WMaps(ix))
+          else
+           call HealpixMapMulCut(Maps(Channel),WeightMaps(i),WMaps(ix), 1)
+          end if
+         !  call HealpixVis_Map2ppmfile(WMaps(i), 'outfiles/wmap.ppm')
     end do
     end do
-                
-    call HealpixMapSet2CrossPowers(H, WMaps, PCls, nmaps, lmax)
+    
+    call HealpixMapSet2CrossPowers(H, WMaps, PCls, nmaps, lmax,.false.)
     call HealpixMapArray_Free(WMaps)
                 
     StTime = GeteTime()  
@@ -107,9 +156,12 @@ contains
                 print *, chan1, x,chan2,y,ix
                 
                 call PseudoCl_GetCHat(Coupler(ix),PCls%Ps(i,j), Chat)
+              !  call HealpixPower_Write(Chat,'outfiles/Chat.dat')
                 call TBeam_PowerSmooth2(Channels(chan1)%Beam,Channels(chan2)%Beam,CHat,+1)
+!                call HealpixPower_Write(Chat,'outfiles/Chat_beam.dat')
+      
                 HybridP%Cl(lmin:lmax,C_T)= HybridP%Cl(lmin:lmax,C_T) + &
-                    MatMul(HybridMix(1)%Cov(Pix)%C, CHat%Cl(lmin:lmax,C_T))
+                   MatMul(HybridMix(1)%Cov(Pix)%C, CHat%Cl(lmin:lmax,C_T))
                 if (vec_size >=3) then
                  HybridP%Cl(lmin:lmax,C_C)= HybridP%Cl(lmin:lmax,C_C) + &
                     MatMul(HybridMix(2)%Cov(Pix)%C, CHat%Cl(lmin:lmax,C_C))
@@ -138,6 +190,7 @@ contains
    formatted = FString
    
    call StringReplace('%RES%',IntToStr(healpix_res), formatted)
+   call StringReplace('%DVAR%',trim(data_var), formatted)
    if (present(Channel)) call StringReplace('%CHANNEL%',Channel,formatted)
    if (present(Detector))  call StringReplace('%DA%',IntToStr(Detector),formatted)
    if (present(Year))  call StringReplace('%YEAR%',IntToStr(Year),formatted)
@@ -180,7 +233,36 @@ contains
   end do
   C%Beam%Beam = C%Beam%Beam/C%Count
  
- end  subroutine ReadBeams
+ end subroutine ReadBeams
+
+ subroutine SetGaussianBeams(C, lmax)
+  Type(TChannel) :: C
+  character(LEN=256) :: file
+  integer, intent(in) :: lmax
+  integer i
+  Type(TBeam) B
+  
+  allocate(C%DetectorBeams(C%Count))
+  
+  do i=1, C%Count
+  
+   C%DetectorBeams(i)%beam_transfer = .true.
+ 
+   C%DetectorBeams(i)%fwhm = C%Beam%fwhm
+
+   call TBeam_SetGaussian(C%DetectorBeams(i),lmax)
+   if (i==1) then
+    call TBeam_SetGaussian(C%Beam,lmax)
+   else
+    C%Beam%Beam= C%Beam%Beam + C%DetectorBeams(i)%Beam
+   end if
+  end do
+  C%Beam%Beam = C%Beam%Beam/C%Count
+ 
+ end subroutine SetGaussianBeams
+
+
+
  
  subroutine LoadPixelWindow(pixlw,nside)
   use alm_tools
@@ -201,6 +283,7 @@ contains
    if (lmax > npw-1) call MpiStop('lmax too large for pixel window')
    allocate(pixlw(0:npw-1,1:3))
    call LoadPixelWindow(pixlw, nside)
+   print *,'pixel window l=2000 or lmax: ',pixlw(min(lmax,2000),1)
    do channel=1, nchannels
     do i=1, Channels(channel)%Count
      Channels(channel)%DetectorBeams(i)%Beam= Channels(channel)%DetectorBeams(i)%Beam * pixlw(0:lmax,1)
@@ -223,61 +306,54 @@ contains
   
  end function r_nu
 
- subroutine AzimuthalMap(H,fname)
-  Type(HealpixInfo) :: H
-  Type(HealpixMap) :: Obs, Hits
-  character(LEN=*) :: fname
-  Type(HealpixAlm) :: Alm
-  integer ith , nph,l
+subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
+  Type(HealpixCrossPowers) :: CrossPowers
+  Type(HealpixPower) :: PowerArray(:,:)
+  logical, intent(in), optional :: dofree
+  integer i,j,ix,n
   
-       call HealpixMap_Read(Obs,fname)
-       call HealpixMap_Init(Hits, Obs%npix,nested=Obs%ordering==ord_nest,pol = .false.)
-!Note using index 2
-       Hits%TQU(:,1) =  1786.0**2/Obs%TQU(:,2)
-       call HealpixMap_ForceRing(Hits)
-       
-       if (.false.) then
-       do ith = H%ith_start(H%MpiId), H%ith_end(H%MpiId)   
-      
-       if (ith < H%nside) then  ! polar cap (north)
-          nph = 4*ith
-       else                   ! tropical band (north) + equator
-          nph = 4*H%nside
-       endif
-       
-         Hits%TQU(H%istart_north(ith-1):H%istart_north(ith-1)+nph-1,1) = &
-            sum(dble(Hits%TQU(H%istart_north(ith-1):H%istart_north(ith-1)+nph-1,1)))/nph
-        if (ith  <  2*H%nside) then
-           Hits%TQU(H%istart_south(ith):H%istart_south(ith)+nph-1,1) = &
-               sum(Hits%TQU(H%istart_south(ith):H%istart_south(ith)+nph-1,1))/nph
-        end if
-        
-       end do     
-       end if
-       
-      call HealpixMap2Alm(H, Hits, Alm, H%lmax)   
-      call HealpixAlm2Map(H, Alm, Hits, 12*H%nside**2)   
-      print *,'min/max', minval(Hits%TQU),maxval(Hits%TQU)
-      call HealpixVis_Map2ppmfile(Hits, 'outfiles/azimmap.ppm')
-           
-      do l=0, H%lmax
-        write(*,*) l, Alm%TEB(1,l,0)
-      end do  
-      
-      call MpiStop()
+    if (CrossPowers%npol>1) call MpiStop('CrossPowersToHealpixPowerArray: not done for pol')
+    ix=0
+    n = CrossPowers%nmaps / 2
+      do i=1, n
+        do j=1,i
+        ix= ix+1
+        call HealpixPower_Init(PowerArray(ix,1), CrossPowers%lmax, CrossPowers%npol==3, dolens=.false., nofree=.true.)
+        call HealpixPower_Init(PowerArray(ix,2), CrossPowers%lmax, CrossPowers%npol==3, dolens=.false., nofree=.true.)
+        call HealpixPower_Init(PowerArray(ix,3), CrossPowers%lmax, CrossPowers%npol==3, dolens=.false., nofree=.true.)
+        PowerArray(ix,1)%Cl(:,C_T) = CrossPowers%Ps(i,j)%Cl(:,1,1)
+        PowerArray(ix,2)%Cl(:,C_T) = CrossPowers%Ps(i+n,j)%Cl(:,1,1)
+        PowerArray(ix,3)%Cl(:,C_T) = CrossPowers%Ps(i+n,j+n)%Cl(:,1,1)
 
-end subroutine AzimuthalMap
+        if (present(dofree)) then
+         if (dofree) then
+          deallocate(CrossPowers%Ps(i,j)%Cl)
+          deallocate(CrossPowers%Ps(i+n,j)%Cl)
+          deallocate(CrossPowers%Ps(i+n,j+n)%Cl)
+         end if 
+        end if        
+       end do
+    end do   
+    if (dofree) deallocate(CrossPowers%Ps)
 
- subroutine ReadYearMaps(fname, M, DA)
+ end subroutine CrossPowersToHealpixPowerArray2
+
+ subroutine ReadYearMaps(fname, M, DA, map_limit)
   character(LEN=*), intent(in):: fname
   character(LEN=256) :: aname
   Type(HealpixMap) :: M(nyears)
-  integer year, DA
- 
+  integer year, DA, limit
+  integer, intent(in), optional :: map_limit
+  
    do year = 1, nyears 
     aname = FormatFilename(fname, '', DA, year)
     call HealpixMap_Nullify(M(year))
-    call HealPixMap_read(M(year), aname)
+    if (present(map_limit)) then
+     call HealpixMap_Read(M(year),aname, map_limit)
+    else
+     call HealpixMap_Read(M(year),aname)
+    end if
+    call HealpixMap_ForceRing(M(year))
    end do
  
  end subroutine ReadYearMaps
@@ -300,14 +376,19 @@ end subroutine AzimuthalMap
        
                 aname = FormatFilename(year_filename_format, Channels(Channel)%Name, Detector, year)
                 call HealpixMap_Nullify(M)
-                call HealPixMap_read(M, aname)
-                call HealpixMap_SetToIndexOnly(M,1)
+                call HealPixMap_read(M, aname, pol_maps)
+                call HealpixMap_ForceRing(M)
                 M%TQU = M%TQU*map_scale/mK
                 
                 do weight = 1, nweights
                  ix = ix + 1
                  call HealpixMap_Nullify(WMaps(ix))
-                 call HealpixMapMulCut(M,WeightMaps(weight),WMaps(ix), 1)
+                 if (pol_weights) then
+                       call MapMulPolWeight(M,WeightMaps(weight),WeightMapsPol(weight),WMaps(ix))
+                      else
+                       call HealpixMapMulCut(M,WeightMaps(weight),WMaps(ix), 1)
+                  end if
+
                 end do
                 call HealpixMap_Free(M)
                 
@@ -332,12 +413,13 @@ end subroutine AzimuthalMap
    do Detector=1, Channels(channel)%Count
      print *, 'Detector', Detector
 
+
        do year = 1, nyears+1 
        
                 aname = FormatFilename(year_filename_format, Channels(Channel)%Name, Detector, year)
                 call HealpixMap_Nullify(yearMaps(year))
-                call HealPixMap_read(yearMaps(year), aname)
-                call HealpixMap_SetToIndexOnly(yearMaps(year),1)
+                call HealPixMap_read(yearMaps(year), aname, pol_maps)
+                call HealpixMap_ForceRing(yearMaps(year))
                 yearMaps(year)%TQU = yearMaps(year)%TQU*map_scale/mK
  
        end do         
@@ -352,7 +434,12 @@ end subroutine AzimuthalMap
                 do weight = 1, nweights
                  ix = ix + 1
                  call HealpixMap_Nullify(WMaps(ix))
-                 call HealpixMapMulCut(M,WeightMaps(weight),WMaps(ix), 1)
+                 if (pol_weights) then
+                       call MapMulPolWeight(M,WeightMaps(weight),WeightMapsPol(weight),WMaps(ix))
+                      else
+                       call HealpixMapMulCut(M,WeightMaps(weight),WMaps(ix), 1)
+                  end if
+
                 end do
 
                 call HealpixMap_Free(M)
@@ -497,7 +584,11 @@ end subroutine AzimuthalMap
              do weight = 1, nweights
                  nmaps = nmaps + 1
                  call HealpixMap_Nullify(WMaps(nmaps))
-                 call HealpixMapMulCut(MapArray(ix),WeightMaps(weight),WMaps(nmaps), 1)
+                 if (pol_weights) then
+                      call MapMulPolWeight(MapArray(ix),WeightMaps(weight),WeightMapsPol(weight),WMaps(nmaps))
+                      else
+                    call HealpixMapMulCut(MapArray(ix),WeightMaps(weight),WMaps(nmaps), 1)
+                 end if
              end do
        end do !year
    end do !detector
@@ -552,7 +643,7 @@ end subroutine AzimuthalMap
 
   print *, 'Getting cross powers'
 
-  call HealpixMapSet2CrossPowers(H, WMaps, PCls, nmaps, lmax)
+  call HealpixMapSet2CrossPowers(H, WMaps, PCls, nmaps, lmax,.false.)
   do i=1, nmaps
      call HealpixMap_Free(WMaps(i))
   end do
@@ -569,18 +660,26 @@ end subroutine AzimuthalMap
                 do Detector2=1, Channels(channel2)%Count
                 do year2 = 1, nyears 
                     do weight2 = 1, nweights
+
                     ix2 = ix2 + 1
-                    if (ix2>ix) cycle
+!                    if (weight2 > weight) cycle
+                   !!! if (ix2>ix) cycle
+                    !don't miss alternative TE estimator T year 1 E year 2 and T year 2 E year 1
+                    !Can just double count all temperature estimators; bit inefficient
                     if (channel==channel2 .and. year==year2 .and. detector==detector2) cycle 
+
+ !Put all together as though from just channel and weight; don't attempt optimal detector weighting
+                    jointix = (channel-1)*nweights + weight
+                    jointix2 = (channel2-1)*nweights + weight2
+                    index =    sym_ix(njoint,jointix,jointix2)
+                    if (weight2 <= weight) then
+                     call PseudoCl_GetCHat(Coupler(sym_ix(nweights,weight,weight2)),PCls%Ps(ix,ix2), Chat)
+                    else
+                     call PseudoCl_GetCHat(Coupler(sym_ix(nweights,weight,weight2)),PCls%Ps(ix2,ix), Chat)
+                    end if
                     
-                    call PseudoCl_GetCHat(Coupler(sym_ix(nweights,weight,weight2)),PCls%Ps(ix,ix2), Chat)
                     call TBeam_PowerSmooth2(Channels(channel)%DetectorBeams(Detector),&
                         Channels(channel2)%DetectorBeams(Detector2),CHat,+1)
-
- !Put all together as though from just channel and weight; don't attempt optical detector weighting
-                       jointix = (channel-1)*nweights + weight
-                       jointix2 = (channel2-1)*nweights + weight2
-                       index =    sym_ix(njoint,jointix,jointix2)
                        !Just use inverse noise weight as though C_l were full sky uni-weighted
                        ClWeight(0:lmax) = (Channels(channel)%DetectorBeams(Detector)%Beam * &
                                           Channels(channel2)%DetectorBeams(Detector2)%Beam   &
@@ -600,6 +699,7 @@ end subroutine AzimuthalMap
      end do
    end do
 
+  print *,'done Pcl'
   call HealpixCrossPowers_Free(PCls)
 
  call HealpixPower_Nullify(HybridP)
@@ -619,7 +719,9 @@ end subroutine AzimuthalMap
            if (jointix2 > jointix) cycle
            Pix = Pix + 1      
            do l=2,lmax
-            TotCl(Pix)%Cl(l,:) = TotCl(Pix)%Cl(l,:)/TotCount(l,Pix)
+            if (TotCount(l,Pix)/=0) then
+             TotCl(Pix)%Cl(l,:) = TotCl(Pix)%Cl(l,:)/TotCount(l,Pix)
+            end if
            end do
            if (dowrite) call HealpixPower_Write(TotCl(Pix),concat(trim(file_stem)//'_vec',vec_size,'_c',channel,'_w',weight, &
                              '_cc',channel2,'_ww',weight2,'crossPcl.dat'))
@@ -681,13 +783,16 @@ end subroutine AzimuthalMap
   do Detector=1, C%Count
 
     print *, 'Detector', Detector
-    call ReadYearMaps(fname, M, Detector)
+    call ReadYearMaps(fname, M, Detector, pol_maps)
     do year=1, nyears
           ix = ix+1
           call HealpixMap_Nullify(WMaps(ix))
-          call HealpixMap_SetToIndexOnly(M(year),1)
           M(year)%TQU = M(year)%TQU*map_scale/mK
-          call HealpixMapMulCut(M(year),WeightMaps(weight),WMaps(ix), 1)
+          if (pol_weights) then
+            call MapMulPolWeight(M(year),WeightMaps(weight),WeightMapsPol(Weight),WMaps(ix))
+          else
+           call HealpixMapMulCut(M(year),WeightMaps(weight),WMaps(ix), 1)
+          end if
     end do
     call HealpixMapArray_Free(M)
 
@@ -695,7 +800,7 @@ end subroutine AzimuthalMap
     
    print *, 'Getting cross powers'
 
-   call HealpixMapSet2CrossPowers(H, WMaps, PCls, nmaps, lmax)
+   call HealpixMapSet2CrossPowers(H, WMaps, PCls, nmaps, lmax,.false.)
    call HealpixMapArray_Free(WMaps)
    print *, 'Getting Chat'
 
@@ -752,7 +857,8 @@ end subroutine AzimuthalMap
 
    call HealpixMap_Nullify(Mask)
    call HealpixMap_Read(Mask, fits_mask) 
-
+   call HealpixMap_ForceRing(Mask)
+   
    fname = FormatFilename(year_filename_format, C%Name)
    print *,'Getting noise: '//trim(C%Name)
    do DA = 1, C%Count
@@ -815,18 +921,29 @@ end subroutine AzimuthalMap
 
   do Detector = 1,C%Count
 
-  outname = FormatFilename(combined_filename_format, C%Name, Detector)
+  outname = FormatFilename(detector_filename_format, C%Name, Detector)
   if (.not. FileExists(outname)) then  
   print *,'Combining years '//trim(C%Name), Detector
+  if (.not. noise_from_hitcounts) then
+  
+    if (nyears>1) call MpiStop('generalise combined maps')
+    aname = FormatFilename(year_filename_format, C%Name, Detector, Year)
+    call HealPixMap_read(Mtot, aname)
+    call HealpixMap_ForceRing(Mtot)
+  
+  else
+  
   do year = 1, nyears
    aname = FormatFilename(year_filename_format, C%Name, Detector, Year)
 
    print *,'reading '//trim(aname)
    if (year==1) then
     call HealPixMap_read(Mtot, aname)
+    call HealpixMap_ForceRing(Mtot)
      MTot%TQU(:,1) = MTot%TQU(:,1)*Mtot%TQU(:,2) 
    else
     call HealPixMap_read(M, aname)
+    call HealpixMap_ForceRing(M)
     MTot%TQU(:,1) = MTot%TQU(:,1) + M%TQU(:,1)*M%TQU(:,2) 
     MTot%TQU(:,2) = MTot%TQU(:,2) + M%TQU(:,2) 
    end if  
@@ -835,6 +952,8 @@ end subroutine AzimuthalMap
   where (MTot%TQU(:,2)>0)
    MTot%TQU(:,1) = MTot%TQU(:,1)/MTot%TQU(:,2)
   end where
+  
+  end if
   
   print *,'writing '//trim(outname)
   call HealpixMap_Write(Mtot, outname) 
@@ -846,19 +965,27 @@ end subroutine AzimuthalMap
 
  end  subroutine CombineYears
 
- subroutine ProcessDatamap(H, C, M)
+ subroutine ProcessChannelDatamap(H, C, M)
   Type(HealpixInfo) :: H
   Type(TChannel), target :: C
   Type(HealpixMap) ::  M
   Type(HealpixMap) :: AMap
   character(LEN=1024) :: cache_name, map_fname, fname   
   integer i
-      
+ 
+  Type (HealpixAlm) :: A
+  Type(HealpixPOwer) :: Chat 
+ 
+ 
      call HealpixMap_Nullify(M)
-     if (combined_filename_format=='') call MpiStop('No Data file')
-     map_fname = FormatFilename(combined_filename_format, C%Name)
+     if (detector_filename_format=='') call MpiStop('No Data file')
+     map_fname = FormatFilename(detector_filename_format, C%Name)
+     if (C%Count==1 .and. FileExists(map_fname)) then 
+         call HealpixMap_Read(M,map_fname)
+     else
      cache_name = CacheName(map_fname, .true.)
      call StringReplace('%DA%','allDA_signal',cache_name)
+     call StringReplace('.fits','_all.fits',cache_name)
          
      if (FileExists(cache_name)) then
                 print *,'reading cached data map: '// trim(C%Name)
@@ -868,28 +995,38 @@ end subroutine AzimuthalMap
             
               call HealpixMap_ForceRing(M)
               do i=1, C%Count   
-                 fname = FormatFilename(combined_filename_format, C%Name,i)
+                 fname = FormatFilename(detector_filename_format, C%Name,i)
                  call HealpixMap_Read(AMap, fname)
+
                  call HealpixMap_ForceRing(AMap)
-                 M%TQU(:,1) = M%TQU(:,1) + AMap%TQU(:,1)
+                 where (M%TQU /= fmissval .and. AMap%TQU /= fmissval) 
+                  M%TQU = M%TQU + AMap%TQU
+                 elsewhere
+                  M%TQU = fmissval
+                 end where
               end do
-               M%TQU(:,1) = M%TQU(:,1)/C%Count * map_scale/mK
+               where (M%TQU /= fmissval)
+                M%TQU = M%TQU /C%Count 
+               end where
                call HealpixMap_Free(AMap)
                print *,'writing '//trim(cache_name)
                call HealpixMap_Write(M,cache_name)
          end if
+       end if  
+      where (M%TQU /= fmissval)
+                M%TQU = M%TQU * ( map_scale/mK )
+      end where
+      print *, 'data map min/max ', minval(M%TQU(:,1)), maxval(M%TQU(:,1))  
 
- end subroutine ProcessDatamap
+ end subroutine ProcessChannelDatamap
 
  subroutine GetSmoothedNoise(H)
   Type(HealpixInfo) :: H
   Type(HealpixMap) :: Hits
   character(LEN=256):: cache_name
-  
+  real MaxN, minnoise
   
   call HealpixMap_Nullify(SmoothedNoise)
-
- if (inv_noise_map/='') then
 
      if (.not. fullsky_test) then
      
@@ -902,32 +1039,47 @@ end subroutine AzimuthalMap
         call HealpixMap_Read(SmoothedNoise,cache_name)
       else
        print *,'Getting smoothed noise map'
-       call HealpixMap_Read(Hits,inv_noise_map)
-       call HealpixMap_SetToIndexOnly(Hits, 2)
-       Hits%TQU = 1/Hits%TQU
-       call HealpixMap_udgrade(Hits, SmoothedNoise, nside, pessimistic=.false.)
-       call HealpixMap_Smooth(H, SmoothedNoise, SmoothedNoise, 2*lmax, noise_inv_fwhm)
-       call DeleteFile(cache_name)
-       call HealpixMap_Write(SmoothedNoise,cache_name)
-   
+         if (noise_map_for_window/='') then
+
+           call HealpixMap_Read(Hits,noise_map_for_window)
+           if (noise_from_hitcounts) then
+             call HealpixMap_SetToIndexOnly(Hits, min(Hits%nmaps,2))
+             Hits%TQU = 1/Hits%TQU
+           else
+             call HealpixMap_SetToIndexOnly(Hits, 1) !use TT noise for smoothed window
+             MaxN = maxval(Hits%TQU)
+             where (Hits%TQU <0)
+              Hits%TQU = MaxN 
+             end where                 
+           end if
+         minnoise = minval( Hits%TQU(:,1) )
+         Hits%TQU(:,1) = Hits%TQU(:,1)+minnoise  !don't need this for WMAP
+       
+         call HealpixMap_udgrade(Hits, SmoothedNoise, nside, pessimistic=.false.)
+         call HealpixMap_Smooth(H, SmoothedNoise, SmoothedNoise, 2*lmax, noise_inv_fwhm)
+         call DeleteFile(cache_name)
+         call HealpixMap_Write(SmoothedNoise,cache_name)
+           
+        end if 
       end if
        print *,'min/max smoothed noise = ', minval(SmoothedNoise%TQU(:,1))/maxval(SmoothedNoise%TQU(:,1))    
  
      else
       print *, 'using non-smoothed noise'
-      call HealpixMap_Read(SmoothedNoise,inv_noise_map)
-      call healpixMap_SetToIndexOnly(SmoothedNoise,2)
+      call HealpixMap_Read(SmoothedNoise,noise_map_for_window)
+      if (noise_from_hitcounts) then
+        call healpixMap_SetToIndexOnly(SmoothedNoise,Min(smoothedNoise%nmaps,2))
+        where (SmoothedNoise%TQU >0) 
+         SmoothedNoise%TQU = 1/SmoothedNoise%TQU
+        end where
+      else
+        call healpixMap_SetToIndexOnly(SmoothedNoise,1)      
+      end if
       call HealpixMap_ForceRing(SmoothedNoise)
-      where (SmoothedNoise%TQU >0) 
-      SmoothedNoise%TQU = 1/SmoothedNoise%TQU
-      end where
      end if        
 
      end if
 
-    else
-     call HealpixMap_Assign(SmoothedNoise,Channels(1)%NoiseMap)
-    end if
 
  end subroutine GetSmoothedNoise
 
@@ -940,14 +1092,15 @@ end subroutine AzimuthalMap
   integer minnoise
   integer i, year
       
+        print *, 'ProcessNoiseMaps'
         NoiseMap =>  C%NoiseMap
 
         call HealpixMap_Nullify(NoiseMap)
         call HealpixMap_Nullify(AMap)
         
-        if (noise_filename_format/='') then
+        if (detector_noise_filename_format/='') then
         
-         noise_fname = FormatFilename(noise_filename_format, C%Name)
+         noise_fname = FormatFilename(detector_noise_filename_format, C%Name)
          cache_name = CacheName(noise_fname, .true.)
          call StringReplace('%DA%','allDA',cache_name)
          
@@ -959,24 +1112,40 @@ end subroutine AzimuthalMap
                  allocate(C%DetectorYearNoiseMaps(C%Count,nyears))
               end if
               do i=1, C%Count   
-                 fname = FormatFilename(noise_filename_format, C%Name, i) 
+                 fname = FormatFilename(detector_noise_filename_format, C%Name, i) 
                  if (i==1) then
                    call GetNoiseMap(H, NoiseMap, fname, C%sig0(i))
                   else
                    call GetNoiseMap(H, AMap, fname, C%sig0(i))
+                   where (NoiseMap%TQU /= fmissval .and. AMap%TQU /= fmissval)
                     NoiseMap%TQU =  NoiseMap%TQU + AMap%TQU
+                   elsewhere 
+                    NoiseMap%TQU = fmissval 
+                   end where
                   end if
 
                   if (cross_spectra) then
-                   do year = 1, nyears
-                    call HealpixMap_Nullify(C%DetectorYearNoiseMaps(i,year))
-                    fname = FormatFilename(year_filename_format, C%Name, i, year)
-                    call GetNoiseMap(H, C%DetectorYearNoiseMaps(i,year), fname, C%sig0(i))
-                   end do
+                   if (nyears==1) then
+                     call HealpixMap_Nullify(C%DetectorYearNoiseMaps(i,1))
+                     print *,'assigning 1 year'
+                     if (i==1) then
+                      call HealpixMap_Assign(C%DetectorYearNoiseMaps(i,1),NoiseMap)
+                     else
+                      call HealpixMap_Assign(C%DetectorYearNoiseMaps(i,1),AMap)
+                     end if
+                   else
+                    do year = 1, nyears
+                     call HealpixMap_Nullify(C%DetectorYearNoiseMaps(i,year))
+                     fname = FormatFilename(year_noise_filename_format, C%Name, i, year)
+                     call GetNoiseMap(H, C%DetectorYearNoiseMaps(i,year), fname, C%sig0(i))
+                    end do
+                   end if
                   end if
               end do
-!               NoiseMap%TQU = 1._dp/NoiseMap%TQU
+
+               where (NoiseMap%TQU /= fmissval)
                NoiseMap%TQU = NoiseMap%TQU/C%Count**2
+               end where
                call HealpixMap_Free(AMap)
                call HealpixMap_ForceRing(NoiseMap)
                
@@ -987,13 +1156,24 @@ end subroutine AzimuthalMap
          end if
          call HealpixMap_ForceRing(NoiseMap)
         
-         print *,trim(C%Name)//' min/max noise = ', &
-            minval(NoiseMap%TQU(:,1)),maxval(NoiseMap%TQU(:,1))    
+         print *,trim(C%Name)//' min/max TT noise = ', &
+            minval(NoiseMap%TQU(:,1), mask = NoiseMap%TQU(:,1) /= fmissval), &
+             maxval(NoiseMap%TQU(:,1), mask = NoiseMap%TQU(:,1) /= fmissval)    
+         if (want_pol) then
+           print *,trim(C%Name)//' min/max Pol noise = ', &
+            minval(NoiseMap%TQU(:,2:3), mask = NoiseMap%TQU(:,2:3) /= fmissval), &
+             maxval(NoiseMap%TQU(:,2:3), mask = NoiseMap%TQU(:,2:3)/= fmissval)    
+           ENoiseFac = sum(dble(NoiseMap%TQU(:,2)+NoiseMap%TQU(:,3))/dble(NoiseMap%TQU(:,1)), &
+                    mask = NoiseMap%TQU(:,2)/= fmissval )/(2* count(NoiseMap%TQU(:,2)/= fmissval)) 
+           print *, 'Empirical ENoiseFac = ', ENoiseFac             
+
+         end if
  
         else
 
-          call HealpixMap_Init(NoiseMap, npix,pol = .false.)
-               NoiseMap%TQU(:,1) = noise*NoiseMap%npix/(HO_fourpi)
+          call HealpixMap_Init(NoiseMap, npix,pol = want_pol)
+          NoiseMap%TQU(:,1) = noise*NoiseMap%npix/(HO_fourpi)
+          NoiseMap%TQU(:,2:3) = ENoiseFac*noise*NoiseMap%npix/(HO_fourpi)
     
         end if 
       
@@ -1001,83 +1181,21 @@ end subroutine AzimuthalMap
       !Isotropic white noise, no cut
           print *,'Doing uniform white noise'
           NoiseMap%TQU(:,1) = 1/(sum(1/dble(NoiseMap%TQU(:,1)), mask=NoiseMap%TQU(:,1)>0)/count(NoiseMap%TQU(:,1)>0))  
+          if (want_pol) &
+           NoiseMap%TQU(:,2:3) = 1/(sum(1/dble(NoiseMap%TQU(:,2:3)), mask=NoiseMap%TQU(:,2:3)>0)/count(NoiseMap%TQU(:,2:3)>0))  
+ 
           white_NL = NoiseMap%TQU(1,1)*HO_fourpi/NoiseMap%npix
+          white_NL_P = ENoiseFac*white_NL
+ 
        else
           white_NL =  1/(sum(1/dble(NoiseMap%TQU(:,1)), mask=NoiseMap%TQU(:,1)>0)/count(NoiseMap%TQU(:,1)>0)) &
                     *HO_fourpi/NoiseMap%npix
+          if (want_pol) white_NL_P =  1/(sum(1/dble(NoiseMap%TQU(:,2:3)), &
+            mask=NoiseMap%TQU(:,2:3)>0)/count(NoiseMap%TQU(:,2:3)>0))  *HO_fourpi/NoiseMap%npix
+ 
        end if
 
-  
-      if (want_pol) then
-            !same noise for testing
-           white_NL_P = ENoiseFac*white_NL
-           print *,'White_NL_P = ',white_NL
-
-           call HealpixMap_AddPol(NoiseMap)             
-          NoiseMap%TQU(:,2) = NoiseMap%TQU(:,1)*ENoiseFac 
-          NoiseMap%TQU(:,3) = NoiseMap%TQU(:,1)*ENoiseFac
-      end if
-
-
  end subroutine ProcessNoiseMaps
-
-
- subroutine GetNoiseMapPlanck(H, NoiseMap, noise_map)
-  character(LEN=*), intent(in) :: noise_map
-  Type(HealpixInfo) :: H
-  Type(HealpixMap) :: NoiseMap 
-  Type(HealpixMap) :: Hits
-  real(dp) :: meanhit, booknoise
-  real(sp) :: minnoise
-      print *,'Converting noise map planck, probably broken now'
-      
-      if (Channels(1)%beam%beam_transfer) call MpiStop('not done beams for Planck')
-      
-            call HealpixMap_Nullify(NoiseMap)
-            call HealpixMap_Read(NoiseMap, noise_map)
-            print *,'counts nside =', NoiseMap%nside
-
-            call HealpixMap_Nullify(Hits)
-            call HealpixMap_Init(Hits, NoiseMap%npix,nested=NoiseMap%ordering==ord_nest,pol = .false.)
-                
-!            if (want_pol) then
- !               Hits%TQU(:,2) = NoiseMap%TQU(:,7)/mK**2 
-  !              Hits%TQU(:,3) = NoiseMap%TQU(:,9)/mK**2
-   !         end if
-
-            Hits%TQU(:,1) =  NoiseMap%TQU(:,4)/mK**2
-                
-            print *,'rescaling noise to science case'    
-            Hits%TQU= Hits%TQU/16   !!!Scale to bluebook
-                
-            meanhit = sum(dble(Hits%TQU(:,1)))/Hits%npix
-            print *,'Mean pix noise =', meanhit
-            booknoise =  mK*sqrt(meanhit * ( HO_fourpi/Hits%npix)/ (7.1/60./180.*HO_pi)**2 )/2.726
-            print *,'Mean sigma per 7.1fhwm^2 muK/K:',booknoise
-                
-            call HealpixMap_Free(NoiseMap)
-            !  call HealpixVis_Map2ppmfile(Hits, 'outfiles/noisemap.ppm')
-                
-            call HealpixMap_udgrade(Hits, NoiseMap, nside, pessimistic=.false.)
-            NoiseMap%TQU = NoiseMap%TQU* (real(npix)/hits%npix)      
-                
-            if (nside /= Hits%nside) then
-                print *,'smoothing High-res map'
-                minnoise = minval(NoiseMap%TQU(:,1))
-!               call HealpixMap_Smooth(H, NoiseMap, NoiseMap, lmax, apodize_mask_fwhm)
- 
- !Be careful smoothing Q/U noise, don't want to miss monopole and dipole
-                call HealpixMap_Smooth(H, NoiseMap, NoiseMap, 2*lmax, apodize_mask_fwhm)
-                where (NoiseMap%TQU < minnoise) 
-                 NoiseMap%TQU = minnoise
-                end where
-                
-            end if
-
-            call HealpixMap_Free(Hits)
-            call HealpixMap_ForceRing(NoiseMap)      
-
-    end subroutine GetNoiseMapPlanck
 
  subroutine GetNoiseMap(H, NoiseMap, noise_map, noise_sig0)
   character(LEN=*), intent(in) :: noise_map
@@ -1088,18 +1206,20 @@ end subroutine AzimuthalMap
   real(sp) :: minnoise
   real(dp), intent(in) :: noise_sig0
   integer i
-      print *,'converting noise'  // trim(noise_map)
-      if (want_pol) call MpiStop('WMAP only TT at the mo')
+      print *,'converting noise: '  // trim(noise_map)
      
-            call HealpixMap_Nullify(NoiseMap)
-            call HealpixMap_Read(NoiseMap, noise_map)
+          call HealpixMap_Nullify(NoiseMap)
+          call HealpixMap_Read(NoiseMap, noise_map)
+     
+          if (noise_from_hitcounts) then
+             
+            if (want_pol) call MpiStop('noise_from_hitcounts only TT at the mo')
+     
             print *,'counts nside =', NoiseMap%nside
-
             call HealpixMap_Nullify(Hits)
             call HealpixMap_Init(Hits, NoiseMap%npix,nested=NoiseMap%ordering==ord_nest,pol = .false.)
             print *,'Number of zero-hit pixels', count( NoiseMap%TQU(:,2)==0)    
               
-                   
             where (NoiseMap%TQU(:,2)>0)       
              Hits%TQU(:,1) = noise_sig0**2*map_scale**2/mK**2/ NoiseMap%TQU(:,2) 
             end where
@@ -1121,7 +1241,13 @@ end subroutine AzimuthalMap
             end if
 
             call HealpixMap_Free(Hits)
-            call HealpixMap_ForceRing(NoiseMap)      
+         else
+          print *,'scaling noise ',(map_scale/mK)**2
+          where (NoiseMap%TQU/=fmissval)       
+           NoiseMap%TQU = NoiseMap%TQU * (map_scale/mK)**2
+          end where
+         end if
+         call HealpixMap_ForceRing(NoiseMap)      
 
     end subroutine GetNoiseMap
 
@@ -1193,660 +1319,399 @@ end subroutine AzimuthalMap
     HealpixVis_force_range = .false.
     end subroutine ppm_masked_map
 
-   subroutine TestExactLike(H,WeightMap, NoiseMap, M, fid_cl_file, sim_cl_file)
+
+
+   subroutine TestExactLike(H,WeightMap, WeightMapPol,NoiseMap, M, fid_cl_file, sim_cl_file, Coupler)
     use CutSkyAsymm
+    Type(TCouplingMatrix) :: coupler(:)
     Type(HealpixInfo) :: H
-    Type(HealpixMap) :: ProjMap, WeightMap, NoiseMap, NWMap,M, WM
+    Type (TSNModeMat) :: SN
+    Type(TSNModes) :: Modes
+    Type (TSNModeOptions) :: Opts
+    Type(HealpixMap) :: ProjMap, WeightMap, WeightMapPol, NoiseMap, M
+    
     character(LEN=*), intent(in) :: fid_cl_file,sim_cl_file
-    Type (VecArray) :: MapModes(3), SNModes(3)
-    Type (HealpixAlm) :: MaskA, NoiseA, A, MapA, MapAProj
-    Type(HealpixPower) :: PFid, P, ProjCl
+    Type(HealpixPower) :: PFid, P, ProjCl, CHat
     Type(HealpixPower):: CheckCls1, CheckCls2
-    integer l,lmax, nmodes
-    Type(ProjMat) :: Proj, TheoryProj, DataProj, SNProj
-    Type(ProjMatPol) :: ProjPol, TheoryProjPol, SNProjPol
+    integer l,l_low, nmodes
     integer  npol
-    real(dp), allocatable :: modes(:)
-    Type(TCovMat) :: Cov, BigNoiseCov, BigCov, FiducialChol, NoiseCov,ModeNoise,JustNoiseCov,&
-      NoiseCovM,HighlNoiseCov,MixNoise
-    Type(TComplexCovMat) :: PolCov, JustPolNoiseCov, PolNoiseCov, PolHighlNoiseCov, PolModeNoise
-    real(dp), allocatable :: diag(:), BigModes(:), ModeVec(:)
-    Type(AsymmCouplings) PseudoNoiseCov, TestW
-    real(sp), allocatable :: AlmVec(:), AlmVec2(:) 
+    Type(AsymmCouplings) TestW
+    real(sp), allocatable ::AlmVec(:), AlmVec2(:) 
     real(dp) chisq,amp, like, term
-    real(dp) StTime
-    real(dp) highlScaleB,highlScaleT,highlScaleE, highlScaleC
-    real(dp), allocatable :: Linv(:,:), tmp(:,:), tmpSN(:,:), TmpDataProj(:,:)
-    Complex(dp), allocatable :: PolLinv(:,:), Poltmp(:,:), PoltmpSN(:,:)
     complex(dp) AMode
-    integer i,j
-    character(LEN=150) :: exact_file
+    character(LEN=256) :: exact_file, exact_stem
     logical :: noise_cut = .false.
+    Type(HealpixCrossPowers) :: PCls
+    Type(HealpixMap) :: tmpM,WM, MapArr(3)
+    Type(AsymmCouplings) :: Asymm
+    Type (HealpixAlm) :: MaskA, MaskAP,MapA, MapAProj
+    Type(TCovMat) :: FiducialChol
+    real(dp), allocatable :: BigModes(:)
+    integer j
     
-    
-    if (Channels(1)%beam%beam_transfer) call MpiStop('not done beams for exact')
-    
+    real (sp), allocatable :: vec(:)
     asymm_pol = want_pol
     
-    lmax = l_exact+l_exact_margin
+    l_low = l_exact+l_exact_margin
     npol = 1
     if (want_pol) npol=3
 
-    print *,'Doing exact with lmax = ',lmax    
-    exact_file = concat(trim(data_dir)//'Proj_lexact',l_exact,'_margin',l_exact_margin)
+    print *,'Doing exact with lmax = ',l_low    
+    exact_file = concat(trim(data_dir)//'Proj_lexact',l_exact,'_margin',l_exact_margin,'_supp'//trim(WellSupported_txt))
     if (want_pol) exact_file=concat(exact_file,'_pol')
     if (uniform_noise) exact_file=concat(exact_file,'_uninoise') 
+    exact_file = concat(exact_file, ExtractFileName(fits_mask))
+
+    exact_stem = trim(concat('outfiles/'//trim(exact_tag),l_exact,'_llow',l_low,'_supp')) &
+                //trim(WellSupported_txt)//'_SNcut'//trim(exact_SN_cut_txt)//'_'
     
     exact_file = concat(exact_file,'.dat')    
     
-    call HealpixMap2Alm(H,M,MapA,lmax)    
-    call HealpixAlm2Power(MapA,P)
+!    call ppm_masked_map(M,WeightMap, 'outfiles/weighted_map.ppm') 
 
-    call ppm_masked_map(M,WeightMap, 'outfiles/weighted_map.ppm') 
+    if (test_big_cut) then
+      !Test previous with bigger mask
+         call HealpixMap_Read(ProjMap,concat(exact_stem,'lowl_map.fits'))
+
+         call HealpixVis_MapMask2ppm(ProjMap,WeightMap, concat(exact_stem,'lowl_map_bigcut_masked.ppm'), 200.) 
+   
+         ProjMap%TQU = ProjMap%TQU * WeightMap%TQU
+         
+         call HealpixMap2Alm(H,ProjMap,MapAProj,Coupler(1)%lmax)    
+         call HealpixAlm2Power(MapAProj,ProjCl)
+         call HealpixPower_Write(ProjCl,concat(exact_stem,'lowl_map_bigcut_pcl.dat'))
+
+         call HealpixPower_Nullify(CHat)
+         call HealpixMap_Nullify(MapArr(1))
+         call HealpixMap_Assign(MapArr(1), ProjMap)
+         call HealpixMap_Read(ProjMap,concat(exact_stem,'highl_map.fits'))
+         ProjMap%TQU = ProjMap%TQU * WeightMap%TQU
+         call HealpixMap_Nullify(MapArr(2))
+         call HealpixMap_Assign(MapArr(2), ProjMap)
+         call HealpixMapSet2CrossPowers(H, MapArr, PCls, 2, Coupler(1)%lmax,.false.)
+         
+         call PseudoCl_GetCHat(Coupler(1),PCls%Ps(1,1), Chat)
+         call HealpixPower_Write(Chat,concat(exact_stem,'lowl_bigcut_hatcl.dat'))
+         call PseudoCl_GetCHat(Coupler(1),PCls%Ps(2,2), Chat)
+         call HealpixPower_Write(Chat,concat(exact_stem,'highl_bigcut_hatcl.dat'))
+         call MpiStop()
+    end if
   
+    call HealpixPower_ReadFromTextFile(PFid,fid_cl_file,l_low,pol=want_pol,dolens = .false.)
+    if (zero_from_l/=0) PFId%Cl(zero_from_l:lmax,:)=0
+    call HealpixPower_Smooth(PFid,low_l_fwhm)
+
+!$ call OMP_SET_NUM_THREADS(4)
     
     if (.not. no_cache .and. FileExists(exact_file)) then
+  
         print *, 'Reading cached projection matrix and modes' 
-        call OpenFile(exact_file,1,'unformatted')
-     
-        read (1) TheoryProj%nl, TheoryProj%nr
-        allocate(SNModes(1)%V(TheoryProj%nr))
-        read(1) SNModes(1)%V
-        allocate(TheoryProj%M(TheoryProj%nl,TheoryProj%nr))
-        nullify(TheoryProj%RootDiag)
-        do i=1, TheoryProj%nr
-         read(1) TheoryProj%M(:,i)
-        end do
-
-        Read(1) highlScaleT
-        
-        if (want_pol) then
-            read(1) highlScaleE, highlScaleC, highlScaleB
-            read (1) TheoryProjPol%nl, TheoryProjPol%nr
-            allocate(SNModes(2)%V(TheoryProjPol%nr))
-            allocate(SNModes(3)%V(TheoryProjPol%nr))
-            read(1) SNModes(2)%V,SNModes(3)%V
-            nullify(TheoryProjPol%RootDiag)
-            allocate(TheoryProjPol%EProj(TheoryProjPol%nl,TheoryProjPol%nr))
-            allocate(TheoryProjPol%BProj(TheoryProjPol%nl,TheoryProjPol%nr))
-            do i=1, TheoryProjPol%nr
-             read(1) TheoryProjPol%EProj(:,i)
-             read(1) TheoryProjPol%BProj(:,i)
-            end do
-        end if
-        
-       nmodes = TheoryProj%nr
-       if (want_pol) then
-        nmodes= nmodes + TheoryProjPol%nr*2
-       end if
-       
-       print *,'nmodes = ',nmodes
-       
-        allocate(bigNoiseCov%C(nmodes,nmodes))
-        allocate(HighlNoiseCov%C(nmodes,nmodes))
-        do i=1,nmodes
-          read(1) BigNoiseCov%C(1:i,i)
-          read(1) HighlNoiseCov%C(1:i,i)          
-        end do
-        do i=1,nmodes
-         do j=i+1, nmodes
-           BigNoiseCov%C(j,i) = BigNoiseCov%C(i,j) 
-           HighlNoiseCov%C(j,i) = HighlNoiseCov%C(i,j) 
-         end do
-        end do 
-          
-        read (1) i
-        if (i/=252353) stop 'Bad file' 
-   
-        close(1)
+        call TSNModeMat_Read(SN, exact_file, .true.)
+        if (SN%MakeOptions%l_exact/=l_exact) call MpiStop('wrong l_exact in cache')
+        if (SN%MakeOptions%l_low/=l_low) call MpiStop('wrong l_low in cache')
+        Opts = SN%MakeOptions
         print *,'Read file'
-   
+         
     else
 
         print *, 'frac weight < 1e-5', count(WeightMap%TQU(:,1)<1e-5)/real(WeightMap%npix)
-        call HealpixMap_Assign(WM, M)
-        WM%TQU(:,1)=M%TQU(:,1)*WeightMap%TQU(:,1)
-        if (want_pol) then
-         WM%TQU(:,2)=M%TQU(:,2)*WeightMap%TQU(:,1)
-         WM%TQU(:,3)=M%TQU(:,3)*WeightMap%TQU(:,1)
+        print *, 'frac weight < 0.1', count(WeightMap%TQU(:,1)<0.1)/real(WeightMap%npix)
+
+        Opts%l_exact = l_exact
+        Opts%l_low = l_low
+        Opts%SN_cut = exact_SN_cut
+        Opts%want_pol = want_pol        
+        Opts%pol_weights = pol_weights
+        Opts%want_cov = .true.
+        Opts%ProjectMonoAndDipole = project_l01
+        Opts%KeepSupport = 0.99d0
+        Opts%ENoiseFac = 4 
+        Opts%keep_pseudo_noise_cov = do_lowl_separation
+        Opts%fake_noise = fake_noise
+        if (exact_cl_lmin  <2) then
+          Opts%l_min_exact = exact_cl_lmin
+          PFid%Cl(exact_cl_lmin:1,1) = PFid%Cl(2,1) !Assume looking for residuals of order the quadrupole
+        else
+          Opts%l_min_exact = 2
         end if
+        call SNModes_GetSNModeMats(H, SN, Opts, WeightMap, WeightMapPol, NoiseMap, PFid)
+        call TSNModeMat_Write(SN, exact_file)
+     end if
      
-        
-        call HealpixMap2Alm(H,WM,MapA,lmax)    
-        call healpixMap_Free(WM)
+    print *,'udgrade' 
+  call HealpixMap_udgrade(M,WM , nside, pessimistic=.false.)
+  call HealpixMap_Assign(M, WM)
+  print *,'mult weight'
+  WM%TQU(:,1)=M%TQU(:,1)*WeightMap%TQU(:,1)
+  if (want_pol) then
+     if (pol_weights) then
+     WM%TQU(:,2)=M%TQU(:,2)*WeightMapPol%TQU(:,1)
+     WM%TQU(:,3)=M%TQU(:,3)*WeightMapPol%TQU(:,1)
+     else
+     WM%TQU(:,2)=M%TQU(:,2)*WeightMap%TQU(:,1)
+     WM%TQU(:,3)=M%TQU(:,3)*WeightMap%TQU(:,1)
+     end if
+  end if
+
+  print *, 'Get SN modes for map'
+  call SNModes_GetSNModes(H, SN, SN%MakeOptions,WM, Modes)
+  call HealpixMap_Free(WM)
+  
+  if (get_exact_cl) then
+     !!!!!!
+      print *,'reading ILC'
+     call HealpixMap_Read(tmpM,concat(input_data_dir,'ILC.fits'))
+     call HealpixMap_ForceRing(tmpM)
+     call HealpixVis_Map2ppmfile(tmpM, concat(exact_stem,'Planck.ppm'),symmetric=.true.)
+
+      print *,'diff map'
+     M%TQU(:,1) = tmpM%TQU(:,1) - M%TQU(:,1)/1000
+     print *,'diff pic'
+     call HealpixVis_Map2ppmfile(M, concat(exact_stem,'WMAP_Planck_diff.ppm'),symmetric=.true.)
+      print *,'smooth map'
+     call HealpixMap_Smooth(H, M, M, 40, 50.d0/60)
+     call HealpixVis_Map2ppmfile(M, concat(exact_stem,'WMAP_Planck_diff_smooth.ppm'),symmetric=.true.)
+      call MpiStop('done')
     
-        call HealpixMap2Alm(H,WeightMap, MaskA, lmax*2)
+     print *,'Doing exact cl with lmin = ', exact_cl_lmin, 'lmax=',exact_cl_lmax
+     call GetFullSkyAlmEstimator(SN,Modes, PFid,MapAProj, exact_cl_lmin,exact_cl_lmax) !get quad and octopole 
 
-        call HealpixMap_Assign(NWMap,WeightMap)
-  
-        NWMap%TQU(:,1) = WeightMap%TQU(:,1)**2*NoiseMap%TQU(:,1)
-        NoiseScale = (HO_fourpi/dble(NoiseMap%npix)) 
-        call HealpixMap2Alm(H,NWMap, NoiseA, lmax*2)
-        call HealpixMap_Free(NWMap)
-
-!$ call OMP_SET_NUM_THREADS(3)
-
-        
-        print *,'CutSkyAsymm_ModeMatrixFromMap'
-        StTime = GeteTime()  
-        call CutSkyAsymm_ModeMatrixFromMap(MaskA, Proj, ProjPol, lmax, WellSupported, MapModes, MapA)
-        print *,'CutSkyAsymm_ModeMatrixFromMap time',  GeteTime()   - StTime
-   
-        call HealpixPower_ReadFromTextFile(PFid,fid_cl_file,lmax,pol=want_pol,dolens = .false.)
-        call TBeam_PowerSmooth(Channels(1)%beam,PFid,-1)
-
-    !Get Noise    
-        StTime = GeteTime()  
-        print *,'Get noise covariance'
-        call CutSkyAsymm_GetNoiseCovariance(Proj,ProjPol, JustNoiseCov, JustPolNoiseCov,NoiseA, lmax, PseudoNoiseCov)
-        if (.not. do_lowl_separation) deallocate(PseudoNoiseCov%WASymm)
-
-        print *,'CutSkyAsymm_GetNoiseCovariance time',  GeteTime()   - StTime
-     
-    !add noise from high l
-        print *,'get high l covariance'
-         StTime = GeteTime()
-         call CutSkyAsymm_GetCovariance(Proj, HighlNoiseCov, PFid, l_exact+1, lmax, .true.)
-         if (fake_noise/=0) then
-          print *,'adding fake noise to diagonal noise var'
-          do i=1,Proj%nr
-            JustNoiseCov%C(i,i) = JustNoiseCov%C(i,i) + fake_noise/NoiseScale
-          end do         
-         end if
-         allocate(noiseCov%C(Proj%nr,Proj%nr))
-         NoiseCov%C = NoiseScale*JustNoiseCov%C + HighlNoiseBoost*HighlNoiseCov%C
-         print *,'CutSkyAsymm_GetCovariance time',  GeteTime()   - StTime
-     
-        deallocate(HighlNoiseCov%C)
-
-        StTime = GeteTime() 
-        call CutSkyAsymm_GetCovariance(Proj, Cov, PFid, 2,l_exact,.false.)
-        print *,'CutSkyAsymm_GetCovariance time',  GeteTime()   - StTime
-
-       print *,'Doing temperature S+N'       
-      !S+N
-       StTime = GeteTime() 
-       
-        allocate(Linv(Proj%nr,Proj%nr))
-   
-        Linv = NoiseCov%C + Cov%C
-        deallocate(NoiseCov%C)
-        
-        ! S + N = L L^T
-        ! Get Linv = [L^{-1}]^T, so Linv is upper triangular
-        call Matrix_CholeskyRootInverse(Linv, transpose=.true.) 
-        print *,'Cholesky root time',  GeteTime()   - StTime
-
-        allocate(tmpSN(Proj%nr,Proj%nr))
-        StTime = GeteTime() 
-        call Matrix_RotateSymm(Cov%C, LInv, Proj%nr,  tmpSN, triangular = .true.)
-        deallocate(Cov%C)
-        print *,'Rotate time',  GeteTime()   - StTime
-        StTime = GeteTime() 
-        !Get modes of Signal/(signal+ noise)
-        call CutSkyAsymm_GetSupportedModes(tmpSN, TheoryProj, 1e-3_dp) 
-        print *,'CutSkyAsymm_GetSupportedModes',  GeteTime()   - StTime
+     call HealpixAlm2Map(H, MapAProj, ProjMap, M%npix)
+     call HealpixVis_Map2ppmfile(ProjMap, concat(exact_stem,'exact_alm_map.ppm'),symmetric=.true.)
+     call HealpixVis_MapMask2ppm(ProjMap,WeightMap, concat(exact_stem,'exact_alm_map_masked.ppm'), 200.) 
+     call HealpixMap2Alm(H, ProjMap, MapAProj, exact_cl_lmax + 2)
+     call HealpixAlm2Power(MapAProj,ProjCl)
+     call HealpixPower_Write(ProjCl, concat(exact_stem,'exact_cl.dat'))
       
-        deallocate(TheoryProj%RootDiag)
-        nullify(TheoryProj%RootDiag)
-
-        StTime = GeteTime() 
-        deallocate(tmpSN)
-        SNProj%nl = Proj%nr
-        SNProj%nr=TheoryProj%nr
-        allocate(SNProj%M(SNProj%nl,SNProj%nr))
-        !SNProj(polix)%M = Proj^T L^{-1}
-        call Matrix_Mult(LInv,TheoryProj%M,SNProj%M) 
-        deallocate(LInv)
- 
-! Get projected noise
-
-        StTime = GeteTime() 
-        allocate(ModeNoise%C(TheoryProj%nr,TheoryProj%nr))
-!        !tmpSN = <nn^T> = [ Proj^T L^{-1}] NoiseCov [ Proj^T L^{-1}]^T
-        call Matrix_RotateSymm(JustNoiseCov%C, SNProj%M, TheoryProj%nr,  ModeNoise%C)
-        deallocate(JustNoiseCov%C)
-        print *,'noise cov',  GeteTime()   - StTime
-     
-!Data
-       allocate(SNModes(1)%V(SNProj%nr))
-       do i = 1, SNProj%nr
-        SNModes(1)%V(i) = dot_product(SNProj%M(:,i),MapModes(1)%V)
-       end do
-       deallocate(MapModes(1)%V)
-   
-!Get theory coupling matrix
-        StTime = GeteTime() 
-        allocate(tmpSN(TheoryProj%nl,TheoryProj%nr))
-        do i = 1, Proj%nr
-           tmpSN(i,:) = Proj%RootDiag(i)*SNProj%M(i,:)
-        end do
-
-        if (do_lowl_separation) then
-            allocate(TmpDataProj(TheoryProj%nl,TheoryProj%nr))
-            do i=1, Proj%nr
-            TmpDataProj(i,:) = SNProj%M(i,:)/Proj%RootDiag(i)
-            end do
-        end if
-        deallocate(SNProj%M)
-
-        print *,'getting big theory proj'
-        TheoryProj%nl = Proj%nl
-        allocate(TheoryProj%M(TheoryProj%nl,TheoryProj%nr))
-
-        call Matrix_Mult(Proj%M, tmpSN,TheoryProj%M)
-
-        deallocate(tmpSN)
-  
-        if (do_lowl_separation) then
-            print *,'getting big data proj'
-            DataProj%nl = Proj%nl
-            DataProj%nr = TheoryProj%nr
-            allocate(DataProj%M(DataProj%nl,DataProj%nr))
-            call Matrix_Mult(Proj%M, tmpDataProj,DataProj%M)
-            deallocate(tmpDataProj)
-        end if
-     
-      deallocate(Proj%M)
+     call mpistop()
        
- !!!!Doing polarization      
-      if (want_pol) then      
-       print *,'Doing Polarization'        
-
-                !for projection into S+N eigenmodes just approx pol cov as with no mixing from EE
-                StTime = GeteTime()  
-                !Get real part
-                call CutSkyAsymm_UnmixedPolCov(ProjPol, PolHighlNoiseCov, PFid, l_exact+1, lmax)
-                allocate(PolnoiseCov%C(ProjPol%nr,ProjPol%nr))
-                PolNoiseCov%C = (ENoiseFac*NoiseScale)*JustPolNoiseCov%C + HighlNoiseBoost*PolHighlNoiseCov%C
-                print *,'CutSkyAsymm_UnmixedPolCov time',  GeteTime()   - StTime
-                deallocate(PolHighlNoiseCov%C)
-
-                StTime = GeteTime() 
-                call CutSkyAsymm_UnmixedPolCov(ProjPol, PolCov, PFid, 2,l_exact)
-                print *,'CutSkyAsymm_UnmixedPolCov time',  GeteTime()   - StTime
-
-                !S+N
-                StTime = GeteTime() 
-                
-                allocate(PolLinv(ProjPol%nr,ProjPol%nr))
-
-                PolLinv = PolNoiseCov%C + PolCov%C
-                deallocate(PolNoiseCov%C)
-                
-                ! S + N = L L^\dag
-                ! Get Linv = [L^{-1}]^\dag, so Linv is upper triangular
-                call Matrix_CCholeskyRootInverse(PolLinv, dagger=.true.) 
-                print *,'CCholesky root time',  GeteTime()   - StTime
-
-                
-                allocate(PoltmpSN(ProjPol%nr,ProjPol%nr))
-                StTime = GeteTime() 
-                call Matrix_CRotateSymm(PolCov%C, PolLInv, ProjPol%nr,  PoltmpSN, triangular = .true.)
-                deallocate(PolCov%C)
-                print *,'Rotate time',  GeteTime()   - StTime
-                StTime = GeteTime() 
-                !Get modes of Signal/(signal+ noise)
-                call CutSkyAsymm_GetSuppModesPol(PoltmpSN, TheoryProjPol,1e-4_dp) 
-                print *,'CutSkyAsymm_GetSuppModesPol',  GeteTime()   - StTime
-                
-                deallocate(PoltmpSN)
-                deallocate(TheoryProjPol%RootDiag)
-                nullify(TheoryProjPol%RootDiag)
-
-                StTime = GeteTime() 
-
-                SNProjPol%nl = ProjPol%nr
-                SNProjPol%nr= TheoryProjPol%nr
-                allocate(SNProjPol%WComp(SNProjpol%nl,SNProjPol%nr))
-                !SNProj(polix)%M = Proj^\dag L^{-1}
-                call Matrix_CMult(PolLInv,TheoryProjPol%WComp,SNProjPol%WComp) 
-                deallocate(PolLInv)
-                deallocate(TheoryProjPol%WComp)
-                
-            ! Get projected noise
-
-                StTime = GeteTime() 
-                print *,'Getting polmodenoise'
-                allocate(PolModeNoise%C(TheoryProjPol%nr,TheoryProjPol%nr))
-            !        !tmpSN = <nn^T> = [ Proj^T L^{-1}] NoiseCov [ Proj^T L^{-1}]^T
-                call Matrix_CRotateSymm(JustPolNoiseCov%C, SNProjPol%WComp, TheoryProjPol%nr,  PolModeNoise%C)
-                deallocate(JustPolNoiseCov%C)
-                print *,'pol noise cov',  GeteTime()   - StTime
-                
-            !Data
-                allocate(SNModes(2)%V(SNProjPol%nr))
-                allocate(SNModes(3)%V(SNProjPol%nr))
-              
-                do i = 1, SNProjPol%nr
-                 AMode = dot_product(cmplx(MapModes(2)%V,MapModes(3)%V),SNProjPol%WComp(:,i))
-                  !does sum(cjg(A)*B)
-                 SNModes(2)%V(i) = real(AMode)
-                 SNModes(3)%V(i) = -aimag(AMode)
-                end do
-                deallocate(MapModes(2)%V)
-                deallocate(MapModes(3)%V)
-
-            !Get theory coupling matrix
-                StTime = GeteTime() 
-                allocate(PoltmpSN(TheoryProjPol%nl,TheoryProjPol%nr))
-                do i = 1, ProjPol%nr
-                    PoltmpSN(i,:) = ProjPol%RootDiag(i)*SNProjPol%WComp(i,:)
-                end do
-                deallocate(SNProjPol%WComp)
-
-                print *,'getting big theory proj'
-                TheoryProjPol%nl = ProjPol%nl
-                allocate(TheoryProjPol%WComp(TheoryProjPol%nl,TheoryProjPol%nr))
-                call Matrix_CMult(ProjPol%WComp, PoltmpSN,TheoryProjPol%WComp)
-                deallocate(ProjPol%WComp)
-                nullify(ProjPol%WComp)
-                deallocate(PoltmpSN)
-
-                allocate(TheoryProjPol%EProj(TheoryProjPol%nl,TheoryProjPol%nr))
-                allocate(TheoryProjPol%BProj(TheoryProjPol%nl,TheoryProjPol%nr))
-                TheoryProjPol%EProj = real(TheoryProjPol%WComp)  !'E'^T = E^T EProj + B^T BProj
-                TheoryProjPol%BProj = aimag(TheoryProjPol%WComp)
-                deallocate(TheoryProjPol%WComp)
-                nullify(TheoryProjPol%WComp)
-                   
-      end if
-
-!!!Big vectors
-       nmodes = TheoryProj%nr
-       if (want_pol) then
-        nmodes= nmodes + TheoryProjPol%nr*2
-       end if
-
-       StTime = GeteTime() 
-       print *,'Get full covariance'
-       
-       ModeNoise%C = NoiseScale*ModeNoise%C
-       PolModeNoise%C = (ENoiseFac*NoiseScale)*PolModeNoise%C
-       allocate(bigNoiseCov%C(nmodes,nmodes))
-       BigNoiseCov%C=0
-       BigNoiseCov%C(1:TheoryProj%nr,1:TheoryProj%nr) = ModeNoise%C
-       deallocate(ModeNoise%C)
-       if (want_pol) then
-        BigNoiseCov%C(TheoryProj%nr+1:TheoryProj%nr+TheoryProjPol%nr,TheoryProj%nr+1:TheoryProj%nr+TheoryProjPol%nr) = & 
-           + real(PolModeNoise%C)
-       
-        BigNoiseCov%C(TheoryProj%nr+TheoryProjPol%nr+1:TheoryProj%nr+2*TheoryProjPol%nr,&
-              TheoryProj%nr+TheoryProjPol%nr+1:TheoryProj%nr+2*TheoryProjPol%nr) = real(PolModeNoise%C)
-
-        !BE           
-        BigNoiseCov%C(TheoryProj%nr+TheoryProjPol%nr+1:TheoryProj%nr+2*TheoryProjPol%nr,&
-              TheoryProj%nr+1:TheoryProj%nr+TheoryProjPol%nr) = aimag(PolModeNoise%C)
-       
-       !EB    
-        BigNoiseCov%C(TheoryProj%nr+1:TheoryProj%nr+TheoryProjPol%nr, &
-                TheoryProj%nr+TheoryProjPol%nr+1:TheoryProj%nr+2*TheoryProjPol%nr) = - aimag(PolModeNoise%C)
-
-        deallocate(PolModeNoise%C)
-       end if
-
-       print *,'get full high l covariance'         
-       call CutSkyAsymm_GetFullCovariance(TheoryProj,TheoryProjPol, HighlNoiseCov, PFid, l_exact+1,lmax)
-       
-       print *,'Get full high l covariance time',  GeteTime()   - StTime
-       
-       print *,'writing files'
-        
-        call CreateFile(exact_file,1,'unformatted')
-        write(1) TheoryProj%nl, TheoryProj%nr
-        write(1) SNModes(1)%V 
-        do i=1, TheoryProj%nr
-         write(1) TheoryProj%M(1:TheoryProj%nl,i)
-        end do
-
-       highlScaleT = PFid%Cl(l_exact+1,C_T)
-       write(1) highlScaleT
-        
-       if (want_pol) then
-            highlScaleB = PFid%Cl(l_exact+1,C_B)
-            highlScaleE = PFid%Cl(l_exact+1,C_E)
-            highlScaleC = PFid%Cl(l_exact+1,C_C)
- 
-            write(1) highlScaleE, highlScaleC, highlScaleB
-
-            write (1) TheoryProjPol%nl, TheoryProjPol%nr
-            write(1) SNModes(2)%V,SNModes(3)%V
- !           write(1) DiagNoise(2)%V 
-            do i=1, TheoryProjPol%nr 
-             write(1) TheoryProjPol%EProj(1:TheoryProjPol%nl,i)
-             write(1) TheoryProjPol%BProj(1:TheoryProjPol%nl,i)
-            end do
-        end if
-
-
-        do i=1,nmodes
-          write(1) BigNoiseCov%C(1:i,i)
-          write(1) HighlNoiseCov%C(1:i,i)
-        end do
-       i=252353
-       write(1) i
-      close(1)
-    end if    
-
-
-   StTime = GeteTime() 
+  end if
 
   if (do_lowl_separation) then
    if (want_pol) stop 'not done pol high l projection'
    !Get high-l map with rubbish projected
-
+     
      print *,'getting lowl map'
+   !Eq 20 in paper
+     
    !Theory part
      print *,'theory part of cov'
-     allocate(AlmVec(TheoryProj%nl))
-     AlmVec =  matmul(TheoryProj%M,SNModes(1)%V)   
-     call HealpixVectorMultPower(AlmVec,PFid, lmax)
-
-     call CutSkyAsymm_GetCoupling(TestW, MaskA, lmax, plusonly = .false.)
+     allocate(AlmVec(SN%TheoryProj%nl))
+     
+     print *, SN%TheoryProj%nl,SN%TheoryProj%nr, Modes%nmodes , SN%DataProj%nr
+          
+     AlmVec =  matmul(SN%TheoryProj%M,Modes%SNModes(1)%V)   
+     print *,' mult by C'
+     call HealpixVectorMultPower(AlmVec,PFid, l_low)
+     call HealpixMap2Alm(H,WeightMap, MaskA, l_low*2)
+     if (pol_weights) then
+      call HealpixMap2Alm(H,WeightMapPol, MaskAP, l_low*2)      
+     else
+      MaskAP = MaskA
+     end if
+     print *,' Get pseudo alm coupling matrix'
+     call CutSkyAsymm_GetCoupling(TestW, MaskA, MaskAP, l_low, plusonly = .false.)
      AlmVec = matmul(TestW%WAsymm, AlmVec)
 
+     deallocate(TestW%WAsymm)
+ 
    !Noise part
      print *,'noise part of cov'
-     allocate(AlmVec2(DataProj%nl))
-     AlmVec2 =  matmul(DataProj%M,SNModes(1)%V)   
-     AlmVec2 = NoiseScale*matmul(PseudoNoiseCov%WAsymm, AlmVec2)
+     allocate(AlmVec2(SN%DataProj%nl))
+     AlmVec2 =  matmul(SN%DataProj%M,Modes%SNModes(1)%V)   
+      print *, sum(abs(AlmVec2))
+     AlmVec2 =  matmul(SN%PseudoNoiseCov%WAsymm, AlmVec2)
+      print *, sum(abs(AlmVec2))
      AlmVec = AlmVec + AlmVec2
      deallocate(ALmVec2)
-     print *, DataProj%nl, TheoryProj%nl, (lmax+1)**2
-     call HealpixVector2Alm(AlmVec, MapAProj, lmax)
+     print *, SN%DataProj%nl, SN%TheoryProj%nl, (l_low+1)**2, SN%TheoryProj%nr, SN%DataProj%nr
+     call HealpixVector2Alm(AlmVec, MapAProj, l_low)
+     
+     call HealpixAlm2Power(MapAProj,ProjCl)
+
+     call HealpixPower_Write(ProjCl,concat(exact_stem,'lowl_map_cl.dat'))
+     
+     call HealpixMap_Nullify(ProjMap) 
      call HealpixAlm2Map(H, MapAProj, ProjMap, M%npix)
-     call HealpixVis_Map2ppmfile(ProjMap, concat('outfiles/',l_exact,'_lmax',lmax,'lowl_map.ppm'),symmetric=.true.)
-     call ppm_masked_map(ProjMap,WeightMap, concat('outfiles/',l_exact,'_lmax',lmax,'lowl_map_masked.ppm'), 200.) 
+
+     call DeleteFile(concat(exact_stem,'lowl_map.fits'))
+!     call HealpixMap_Write(ProjMap,concat(exact_stem,'lowl_map.fits'))
+     
+     call HealpixVis_Map2ppmfile(ProjMap, concat(exact_stem,'lowl_map.ppm'),symmetric=.true.)
+     call HealpixVis_MapMask2ppm(ProjMap,WeightMap, concat(exact_stem,'lowl_map_masked.ppm'), 200.) 
+     call HealpixMap_Nullify(MapArr(1))
+     call HealpixMap_Nullify(MapArr(2))
+     call HealpixMap_Nullify(MapArr(3))
+     
+     call HealpixMap_Assign(MapArr(1), ProjMap)
 
      ProjMap%TQU = M%TQU - ProjMap%TQU
-     call ppm_masked_map(ProjMap,WeightMap, concat('outfiles/',l_exact,'_lmax',lmax,'highl_map.ppm')) 
+     call DeleteFile(concat(exact_stem,'highl_map.fits'))
+!     call HealpixMap_Write(ProjMap,concat(exact_stem,'highl_map.fits'))
 
+     call HealpixVis_MapMask2ppm(ProjMap,WeightMap, concat(exact_stem,'highl_map.ppm')) 
+     call HealpixMap_Assign(MapArr(2), ProjMap)
+     MapArr(2)%TQU = MapArr(2)%TQU *WeightMap%TQU
+     
+     call HealpixMap_Assign(MapArr(3), M)     
+     MapArr(3)%TQU = MapArr(3)%TQU *WeightMap%TQU
+     
+     
      MapAProj%TEB(:,0:l_exact,:) = 0
      call HealpixAlm2Map(H, MapAProj, ProjMap, M%npix)
-     call HealpixVis_Map2ppmfile(ProjMap, concat('outfiles/',l_exact,'_lmax',lmax,'lowl_map_highl.ppm'),symmetric=.true.)
-     call ppm_masked_map(ProjMap,WeightMap, concat('outfiles/',l_exact,'_lmax',lmax,'lowl_map_highl_masked.ppm'),200.) 
+     call HealpixVis_Map2ppmfile(ProjMap, concat(exact_stem,'lowl_map_highl.ppm'),symmetric=.true.)
+     call HealpixVis_MapMask2ppm(ProjMap,WeightMap, concat(exact_stem,'lowl_map_highl_masked.ppm'),200.) 
    
-     call HealpixVector2Alm(AlmVec, MapAProj, lmax)
-     call HealpixMap2Alm(H,M,MapA,lmax)    
-     MapAProj%TEB = MapA%TEB - MapAProj%TEB
-     MapAProj%TEB(:,l_exact+1:lmax,:) = 0
-     call HealpixAlm2Map(H, MapAProj, ProjMap, M%npix)
-     call ppm_masked_map(ProjMap,WeightMap, concat('outfiles/',l_exact,'_lmax',lmax,'lowl_missing_masked.ppm'),200.) 
-      
+     call HealpixVector2Alm(AlmVec, MapAProj, l_low)
      
-     deallocate(AlmVec)
+     call HealpixMap2Alm(H,M,MapA,l_low)    
+     MapAProj%TEB = MapA%TEB - MapAProj%TEB
+     MapAProj%TEB(:,l_exact+1:l_low,:) = 0
+     call HealpixAlm2Map(H, MapAProj, ProjMap, M%npix)
+     call HealpixVis_MapMask2ppm(ProjMap,WeightMap, concat(exact_stem,'lowl_missing_masked.ppm'),200.) 
+      
      call HealpixAlm2Power(MapAProj,ProjCl)
-     call HealpixPower_Write(ProjCl,'outfiles/lowl_cl.dat')
+     call HealpixPower_Write(ProjCl,concat(exact_stem,'lowl_missing_pcl.dat'))
+     
      call HealpixAlm_Free(MapAProj)
      call HealpixAlm2Power(MapA,ProjCl)
-     call HealpixPower_Write(ProjCl,'outfiles/pcl.dat')
+     call HealpixPower_Write(ProjCl,concat(exact_stem,'all_pcl.dat'))
 
-     deallocate(PseudoNoiseCov%WASymm)
+     print *,'getting Chat'
+     call HealpixPower_Nullify(CHat)
+     call HealpixMapSet2CrossPowers(H, MapArr, PCls, 3, Coupler(1)%lmax,.false.)
+     
+     call PseudoCl_GetCHat(Coupler(1),PCls%Ps(1,1), Chat)
+     call HealpixPower_Write(Chat,concat(exact_stem,'lowl_hatcl.dat'))
+     call PseudoCl_GetCHat(Coupler(1),PCls%Ps(2,2), Chat)
+     call HealpixPower_Write(Chat,concat(exact_stem,'highl_hatcl.dat'))
+     call PseudoCl_GetCHat(Coupler(1),PCls%Ps(3,3), Chat)
+     call HealpixPower_Write(Chat,concat(exact_stem,'all_cut_hatcl.dat'))
+     print *, 'done Chat'
+
+     M%TQU = M%TQU * WeightMap%TQU
+     call HealpixMap2Alm(H,M, MapA, l_low)
+     call HealpixAlm2Power(MapA,ProjCl)
+     call HealpixPower_Write(ProjCl,concat(exact_stem,'all_cut_pcl.dat'))
+
+     deallocate(AlmVec)
+     deallocate(SN%PseudoNoiseCov%WASymm)
    end if
 
    !Chop to just range of interest
-  TheoryProj%nl =(l_exact+1)**2
-  if (want_pol) TheoryProjPol%nl = (l_exact+1)**2-4
+  SN%TheoryProj%nl =(l_exact+1)**2
+  if (want_pol) SN%TheoryProjPol%nl = (l_exact+1)**2-4
  
-   nmodes = TheoryProj%nr
+   nmodes = SN%TheoryProj%nr
    if (want_pol) then
-    nmodes = nmodes + TheoryProjPol%nr*2 
+    nmodes = nmodes + SN%TheoryProjPol%nr*2 
    end if
 
    print *,'testing likelihood'
-   if (check_cls_file1 /='') then
-    call HealpixPower_ReadFromTextFile(checkCls1,check_cls_file1,lmax,pol=want_pol,dolens = .false.)
-    call HealpixPower_ReadFromTextFile(checkCls2,check_cls_file2,lmax,pol=want_pol,dolens = .false.)
-    call HealpixPower_ReadFromTextFile(PFid,check_cls_file1,lmax,pol=want_pol,dolens = .false.) !dummy allocate
-   end if
+!   if (check_cls_file1 /='') then
+!    call HealpixPower_ReadFromTextFile(checkCls1,check_cls_file1,l_low,pol=want_pol,dolens = .false.)
+!    call HealpixPower_ReadFromTextFile(checkCls2,check_cls_file2,l_low,pol=want_pol,dolens = .false.)
+!    call HealpixPower_ReadFromTextFile(PFid,check_cls_file1,l_low,pol=want_pol,dolens = .false.) !dummy allocate
+!   end if
+!
+!   allocate(BigModes(nmodes))
+!
+!   if (get_mean_likes) then
+!        print *,'Getting mean log likelihoods'
+!        call HealpixPower_ReadFromTextFile(PFid,sim_cl_file,l_low,pol=want_pol,dolens = .false.)
+!       !!!
+!    !    PFid%Cl(2:lmax,C_B)=0
+!        !For full sky result
+!        P%Cl = PFid%Cl
+!        P%Cl(2:l_low,C_T) = P%Cl(2:l_low,C_T) + white_NL
+!        if (want_pol) then
+!         P%Cl(2:l_low,C_E) = P%Cl(2:l_low,C_E) + white_NL_P
+!         P%Cl(2:l_low,C_B) = P%Cl(2:l_low,C_B) + white_NL_P
+!        end if
+!        !For modes
+!        StTime = GeteTime() 
+!        call CutSkyAsymm_GetFullCovariance(TheoryProj,TheoryProjPol, FiducialChol, PFid, 2,l_exact)
+!        print *, 'full covariance time', GeteTime()  - StTime
+!        do j=1,nmodes
+!         FiducialChol%C(:,j) = FiducialChol%C(:,j)+SN%BigNoiseCov%C(:,j) + SN%OtherLNoiseCov%C(:,j)
+!        end do
+!        call Matrix_Cholesky(FiducialChol%C)  !Note upper triangular is not zeroed
+!        print *,'got mean matrix'
+!   end if
+!   
+!   do i=0, 20
+!
+!    if (check_cls_file1 /='') then
+!     !Check interpolation between two models
+!      PFid%Cl = CheckCls2%Cl*(i/20.) + (1-i/20.)*CheckCls1%Cl
+!    else
+!     call HealpixPower_ReadFromTextFile(PFid,sim_cl_file,l_low,pol=want_pol,dolens = .false.)
+!      ! amp = 1+(i-8)/real(l_exact)/2
+!       amp = i/10.
+!     
+!      if (amp<0) cycle
+!!      PFid%Cl(2:l_exact,C_B) =  PFid%Cl(2:l_exact,C_B)*amp
+!     
+!   !   amp = 1+(i-8)/real(l_exact)/2.
+!      PFid%Cl(2:lmax,C_B) =  PFid%Cl(2:lmax,C_B)*amp
+!     end if
+!
+!    call CutSkyAsymm_GetFullCovariance(TheoryProj,TheoryProjPol, BigCov, PFid, 2,l_exact)
+!   
+!     if (get_mean_likes) then
+!         like= 0
+!        call  Matrix_CholeskyRootInverse(BigCov%C)
+!        do j=1, nmodes
+!         like = like - log(BigCov%C(j,j))
+!       end do
+!       call Matrix_MultTri(BigCov%C,FiducialChol%C,'Right')
+!       like = like + sum(BigCov%C**2)/2 
+!     else  
+!        do j=1, TheoryProj%nr
+!        BigModes(j) = SNModes(1)%V(j)
+!        end do
+!        if (want_pol) then
+!        do j=1, TheoryProjPol%nr
+!        BigModes(TheoryProj%nr+j) = SNModes(2)%V(j)
+!        BigModes(TheoryProj%nr+TheoryProjPol%nr+j) = SNModes(3)%V(j)
+!        end do
+!        end if  
+!!         print *,'testsum', sum(BigCov%C**2)
+!        like = Matrix_GaussianLogLike(BigCov%C,BigModes)
+!     end if
+! 
+!    deallocate(BigCov%C)
+!    chisq = 0
+!    do l=2, l_exact
+!     PFid%Cl(l,C_T) = PFid%Cl(l,C_T) + white_NL
+!      if (want_pol) then
+!       PFid%Cl(l,C_E) = PFid%Cl(l,C_E) + white_NL_P
+!       PFid%Cl(l,C_B) = PFid%Cl(l,C_B) + white_NL_P
+!       
+!       term = PFid%Cl(l,C_T)*PFid%Cl(l,C_E) - PFid%Cl(l,C_C)**2
+!       
+!       chisq = chisq + (2*l+1)* ( &
+!       (PFid%Cl(l,C_T)*P%Cl(l,C_E) + PFid%Cl(l,C_E)*P%Cl(l,C_T) - 2 *PFid%Cl(l,C_C)*P%Cl(l,C_C))/term &
+!        + log( term/ (P%Cl(l,C_T)*P%Cl(l,C_E) - P%Cl(l,C_C)**2)) -2)
+!       
+!        chisq = chisq + (2*l+1)* (P%Cl(l,C_B)/PFid%Cl(l,C_B) &
+!                +log(PFid%Cl(l,C_B)/P%Cl(l,C_B)) - 1)
+!            
+!      else
+!       chisq = chisq + (2*l+1)* (P%Cl(l,C_T)/PFid%Cl(l,C_T) + log(PFid%Cl(l,C_T)))
+!      end if
+!    end do
+!    print *, i, chisq/2, like  
+!
+!end do
+!
+!    print *, 'Time for likes', GeteTime()-StTime
+!
 
-   allocate(BigModes(nmodes))
-
-   if (get_mean_likes) then
-        print *,'Getting mean log likelihoods'
-        call HealpixPower_ReadFromTextFile(PFid,sim_cl_file,lmax,pol=want_pol,dolens = .false.)
-       !!!
-    !    PFid%Cl(2:lmax,C_B)=0
-        !For full sky result
-        P%Cl = PFid%Cl
-        P%Cl(2:lmax,C_T) = P%Cl(2:lmax,C_T) + white_NL
-        if (want_pol) then
-         P%Cl(2:lmax,C_E) = P%Cl(2:lmax,C_E) + white_NL_P
-         P%Cl(2:lmax,C_B) = P%Cl(2:lmax,C_B) + white_NL_P
-        end if
-        !For modes
-        StTime = GeteTime() 
-        call CutSkyAsymm_GetFullCovariance(TheoryProj,TheoryProjPol, FiducialChol, PFid, 2,l_exact)
-        print *, 'full covariance time', GeteTime()  - StTime
-        do j=1,nmodes
-         FiducialChol%C(:,j) = FiducialChol%C(:,j)+BigNoiseCov%C(:,j) + HighlNoiseCov%C(:,j)
-        end do
-        call Matrix_Cholesky(FiducialChol%C)  !Note upper triangular is not zeroed
-        print *,'got mean matrix'
-   end if
-   
-   do i=0, 20
-
-    if (check_cls_file1 /='') then
-     !Check interpolation between two models
-      PFid%Cl = CheckCls2%Cl*(i/20.) + (1-i/20.)*CheckCls1%Cl
-    else
-     call HealpixPower_ReadFromTextFile(PFid,sim_cl_file,lmax,pol=want_pol,dolens = .false.)
-      ! amp = 1+(i-8)/real(l_exact)/2
-       amp = i/10.
-     
-      if (amp<0) cycle
-!      PFid%Cl(2:l_exact,C_B) =  PFid%Cl(2:l_exact,C_B)*amp
-     
-   !   amp = 1+(i-8)/real(l_exact)/2.
-      PFid%Cl(2:lmax,C_B) =  PFid%Cl(2:lmax,C_B)*amp
-     end if
-
-    call CutSkyAsymm_GetFullCovariance(TheoryProj,TheoryProjPol, BigCov, PFid, 2,l_exact)
-
-        do j=1,nmodes
-         BigCov%C(:,j) = BigCov%C(:,j)+BigNoiseCov%C(:,j) 
-        end do
-
-   !Scale high l
-       BigCov%C(1:TheoryProj%nr,1:TheoryProj%nr) = &
-        BigCov%C(1:TheoryProj%nr,1:TheoryProj%nr)  &
-          + PFid%Cl(l_exact+1,C_T)/highlScaleT*HighlNoiseCov%C(1:TheoryProj%nr,1:TheoryProj%nr)
-     
-       if (want_pol) then
-        !TE
-        BigCov%C(1:TheoryProj%nr,TheoryProj%nr+1:TheoryProj%nr+TheoryProjPol%nr) = & 
-          BigCov%C(1:TheoryProj%nr,TheoryProj%nr+1:TheoryProj%nr+TheoryProjPol%nr)  & 
-          + sqrt(PFid%Cl(l_exact+1,C_T)/highlScaleT*PFid%Cl(l_exact+1,C_E)/highlScaleE) * &
-          HighlNoiseCov%C(1:TheoryProj%nr,TheoryProj%nr+1:TheoryProj%nr+TheoryProjPol%nr)
-       
-        BigCov%C(TheoryProj%nr+1:TheoryProj%nr+TheoryProjPol%nr,1:TheoryProj%nr) = &
-         transpose(BigCov%C(1:TheoryProj%nr,TheoryProj%nr+1:TheoryProj%nr+TheoryProjPol%nr)) 
- 
-       
-       !EE
-        BigCov%C(TheoryProj%nr+1:TheoryProj%nr+TheoryProjPol%nr,TheoryProj%nr+1:TheoryProj%nr+TheoryProjPol%nr) = & 
-         BigCov%C(TheoryProj%nr+1:TheoryProj%nr+TheoryProjPol%nr,TheoryProj%nr+1:TheoryProj%nr+TheoryProjPol%nr)  & 
-          + PFid%Cl(l_exact+1,C_E)/highlScaleE* &
-          HighlNoiseCov%C(TheoryProj%nr+1:TheoryProj%nr+TheoryProjPol%nr,TheoryProj%nr+1:TheoryProj%nr+TheoryProjPol%nr)
-  
-       !BB
-        BigCov%C(TheoryProj%nr+TheoryProjPol%nr+1:TheoryProj%nr+2*TheoryProjPol%nr,&
-                       TheoryProj%nr+TheoryProjPol%nr+1:TheoryProj%nr+2*TheoryProjPol%nr) = &
-              BigCov%C(TheoryProj%nr+TheoryProjPol%nr+1:TheoryProj%nr+2*TheoryProjPol%nr, &
-                       TheoryProj%nr+TheoryProjPol%nr+1:TheoryProj%nr+2*TheoryProjPol%nr)  &
-             + PFid%Cl(l_exact+1,C_B)/highlScaleB* &
-               HighlNoiseCov%C(TheoryProj%nr+TheoryProjPol%nr+1:TheoryProj%nr+2*TheoryProjPol%nr, &
-              TheoryProj%nr+TheoryProjPol%nr+1:TheoryProj%nr+2*TheoryProjPol%nr)              
-
-       
-        BigCov%C(TheoryProj%nr+TheoryProjPol%nr+1:TheoryProj%nr+2*TheoryProjPol%nr,&
-              TheoryProj%nr+1:TheoryProj%nr+TheoryProjPol%nr) = &
-         BigCov%C(TheoryProj%nr+TheoryProjPol%nr+1:TheoryProj%nr+2*TheoryProjPol%nr,&
-              TheoryProj%nr+1:TheoryProj%nr+TheoryProjPol%nr)  & 
-             + PFid%Cl(l_exact+1,C_E)/highlScaleE* &
-               HighlNoiseCov%C(TheoryProj%nr+TheoryProjPol%nr+1:TheoryProj%nr+2*TheoryProjPol%nr,&
-              TheoryProj%nr+1:TheoryProj%nr+TheoryProjPol%nr)
-       !EB    
-        BigCov%C(TheoryProj%nr+1:TheoryProj%nr+TheoryProjPol%nr, &
-                 TheoryProj%nr+TheoryProjPol%nr+1:TheoryProj%nr+2*TheoryProjPol%nr) = &
-           transpose(BigCov%C(TheoryProj%nr+TheoryProjPol%nr+1:TheoryProj%nr+2*TheoryProjPol%nr,&
-              TheoryProj%nr+1:TheoryProj%nr+TheoryProjPol%nr))
-
-        end if
-        
-   
-     if (get_mean_likes) then
-         like= 0
-        call  Matrix_CholeskyRootInverse(BigCov%C)
-        do j=1, nmodes
-         like = like - log(BigCov%C(j,j))
-       end do
-       call Matrix_MultTri(BigCov%C,FiducialChol%C,'Right')
-       like = like + sum(BigCov%C**2)/2 
-     else  
-        do j=1, TheoryProj%nr
-        BigModes(j) = SNModes(1)%V(j)
-        end do
-        if (want_pol) then
-        do j=1, TheoryProjPol%nr
-        BigModes(TheoryProj%nr+j) = SNModes(2)%V(j)
-        BigModes(TheoryProj%nr+TheoryProjPol%nr+j) = SNModes(3)%V(j)
-        end do
-        end if  
-!         print *,'testsum', sum(BigCov%C**2)
-        like = Matrix_GaussianLogLike(BigCov%C,BigModes)
-     end if
- 
-    deallocate(BigCov%C)
-    chisq = 0
-    do l=2, l_exact
-     PFid%Cl(l,C_T) = PFid%Cl(l,C_T) + white_NL
-      if (want_pol) then
-       PFid%Cl(l,C_E) = PFid%Cl(l,C_E) + white_NL_P
-       PFid%Cl(l,C_B) = PFid%Cl(l,C_B) + white_NL_P
-       
-       term = PFid%Cl(l,C_T)*PFid%Cl(l,C_E) - PFid%Cl(l,C_C)**2
-       
-       chisq = chisq + (2*l+1)* ( &
-       (PFid%Cl(l,C_T)*P%Cl(l,C_E) + PFid%Cl(l,C_E)*P%Cl(l,C_T) - 2 *PFid%Cl(l,C_C)*P%Cl(l,C_C))/term &
-        + log( term/ (P%Cl(l,C_T)*P%Cl(l,C_E) - P%Cl(l,C_C)**2)) -2)
-       
-        chisq = chisq + (2*l+1)* (P%Cl(l,C_B)/PFid%Cl(l,C_B) &
-                +log(PFid%Cl(l,C_B)/P%Cl(l,C_B)) - 1)
-            
-      else
-       chisq = chisq + (2*l+1)* (P%Cl(l,C_T)/PFid%Cl(l,C_T) + log(PFid%Cl(l,C_T)))
-      end if
-    end do
-    print *, i, chisq/2, like  
-
-end do
- 
-    print *, 'Time for likes', GeteTime()-StTime
     call MpiStop()
- 
+
    end subroutine TestExactLike
+
 
 
    subroutine TestPix(H, Mask, cls_file)
@@ -1954,8 +1819,429 @@ end do
     call CloseFile(f)
       
    end subroutine PowersToRows
+
+   subroutine GetApodizedMask(H,Mask,cache_fname,fits_mask)
+   Type(HealpixInfo) :: H
+   Type(HealpixMap) :: Mask, BinaryMask
+   character(LEN=*), intent(in) :: cache_fname, fits_mask
+   Type(HealpixAlm) :: A
+   integer process_mask, i
+
+          if (.not. FileExists(cache_fname)) then  
+          
+            print *,'Reading BinaryMask'
+            call HealpixMap_Nullify(BinaryMask)
+            call HealpixMap_Read(BinaryMask, fits_mask) 
+                 
+            if (BinaryMask%nside /= nside) print *, 'Upgrading '
+            call HealpixMap_udgrade(BinaryMask, Mask, nside, pessimistic=.false.)
+            call HealpixMap_Free(BinaryMask)
+            call HealpixMap_ForceRing(Mask)
+
+            print *,'generating apodised high-res mask'  
+            call HealpixMap2Alm(H,Mask, A, lmax*2, map_ix=min(2,Mask%nmaps)) !!!
+            call HealpixAlm_Smooth(A,apodize_mask_fwhm)
+            call HealpixAlm2Map(H,A,Mask,npix)
+
+            print *,'minmax mask first pass  = ', minval(Mask%TQU), maxval(Mask%TQU)
+!Note to get variance right we need w^2 to have not too much high frequency.
+            Mask%TQU  = max(0.,Mask%TQU*1.2-0.1)  
+            Mask%TQU  = min(1.,Mask%TQU)  
+ 
+            call HealpixMap_Smooth(H, Mask, Mask, 2*lmax, apodize_mask_fwhm/2)
+            print *,'minmax mask = ', minval(Mask%TQU), maxval(Mask%TQU)
+            Mask%TQU  = max(0.,Mask%TQU)
+            
+            if (processing_mask /='') then
+             !Make sure exactly zero in zero-hit pixels
+             call HealpixMap_Nullify(BinaryMask)
+             call HealpixMap_Read(BinaryMask, processing_mask) 
+             call HealpixMap_ForceRing(BinaryMask)
+             if (BinaryMask%npix /= Mask%npix) Call MpiStop('processing mask not right res')             
+             if (processing_mask_badpix) then
+              where (BinaryMask%TQU(:,1)<0) 
+               Mask%TQU(:,1)=0
+              end where
+             else
+              if (processing_mask_map > BinaryMask%nmaps) call MpiStop('processing_mask_map > BinaryMask%nmaps')
+              process_mask=0
+              do i=0, Mask%npix
+               if (BinaryMask%TQU(i,processing_mask_map)==0)  then
+                 if (Mask%TQU(i,1)>0.1) process_mask=process_mask+1
+                 Mask%TQU(i,1)=0
+               end if
+              end do
+              print *,'Masking processing mask, additional %: ', process_mask/real(BinaryMask%npix)*100
+             end if
+             call HealpixMap_Free(BinaryMask)
+            end if  
+            
+            call HealpixVis_Map2ppmfile(Mask, 'outfiles/mask.ppm')
+
+            call HealpixMap_Write(MAsk,cache_fname)
+          
+        else    
+           
+           print *,'Reading cached mask'
+           call HealpixMap_Nullify(Mask)
+           call HealpixMap_Read(Mask,cache_fname)
+       
+        end if
+
+       print *,'minmax mask = ', minval(Mask%TQU), maxval(Mask%TQU)
+       print *,'fsky = ', sum(real(Mask%TQU(:,1),dp))/Mask%npix
+    end subroutine GetApodizedMask
+
+  subroutine DifferenceMaps
+      Type(HealpixMap) :: M, M2
+       real(dp) :: norm1, norm2
+       
+        call HealpixMap_read(M,'C:\tmp\ctp3\v3.1\100Ghz23.fits')
+        call HealpixMap_read(M2,'C:\tmp\ctp3\v3.1\100Ghz14.fits')
+        norm1 = sum(M%TQU(:,1), mask = M%TQU(:,1) /= fmissval)/ count( M%TQU(:,1) /= fmissval)
+        norm2 = sum(M2%TQU(:,1), mask = M2%TQU(:,1) /= fmissval)/ count( M2%TQU(:,1) /= fmissval)
+        print *,norm1, norm2
+        where (M%TQU(:,1)/= fmissval)
+        m%tqu(:,1) = m%tqu(:,1) - norm1
+        elsewhere 
+        m%tqu(:,1) = 0
+        end where
+        where (M2%TQU(:,1)/= fmissval )
+        m2%tqu(:,1) = m2%tqu(:,1) - norm2
+        elsewhere
+        m2%tqu(:,1) = 0
+        end where
    
+        call HealpixVis_Map2ppmfile(M, 'z:\M.ppm')            
+        call HealpixVis_Map2ppmfile(M2, 'z:\M2.ppm')            
+
+   
+        where (M%TQU(:,1) /= 0 .and. M2%TQU(:,1) /= 0)
+         M%TQU(:,1) = M%TQU(:,1) - M2%TQU(:,1) 
+        elsewhere
+         M%TQU(:,1) = 0
+        end where
+        
+        call HealpixVis_Map2ppmfile(M, 'z:\diffmap.ppm')            
+        
+        stop
+          
+  end subroutine DifferenceMaps
+  
+  
+  subroutine CombineSplitNoiseMaps(tag)
+   Type(HealpixMap) :: M, MQ,MU,MN
+   character(LEN=*), intent(in) :: tag
+   
+   call HealpixMap_Read(M,trim(tag)//'_noise_II.fits')
+   call HealpixMap_Read(MQ,trim(tag)//'_QQ.fits')
+   call HealpixMap_Read(MU,trim(tag)//'_UU.fits')
+   call HealpixMap_ForceRIng(M)   
+   call HealpixMap_ForceRIng(MQ)   
+   call HealpixMap_ForceRIng(MU)
+   call HealpixMap_Init(MN,M%npix, pol=.true.)
+   MN%TQU(:,1)=M%TQU(:,1)
+   MN%TQU(:,2)=MQ%TQU(:,1)
+   MN%TQU(:,3)=MU%TQU(:,1)
+   call HealpixMap_WRite(MN,trim(tag)//'_pol_noise.fits')
+   
+   call HealpixMap_Read(M,trim(tag)//'.fits')
+   call HealpixMap_Read(MQ,trim(tag)//'_Q.fits')
+   call HealpixMap_Read(MU,trim(tag)//'_U.fits')
+   call HealpixMap_ForceRIng(M)   
+   call HealpixMap_ForceRIng(MQ)   
+   call HealpixMap_ForceRIng(MU)
+   call HealpixMap_Init(MN,M%npix, pol=.true.)
+   MN%TQU(:,1)=M%TQU(:,1)
+   MN%TQU(:,2)=MQ%TQU(:,1)
+   MN%TQU(:,3)=MU%TQU(:,1)
+   call HealpixMap_WRite(MN,trim(tag)//'_pol.fits')
+  
+   
+   call HealpixMap_Free(M)
+   call HealpixMap_Free(MQ)
+   call HealpixMap_Free(MU)
+   call HealpixMap_Free(MN)
+  
+  end subroutine CombineSplitNoiseMaps
+
+  subroutine AddPlanckSimMaps(H, sim_no)
+      use pix_tools
+       Type(HealpixInfo)  :: H
+       Type(HealpixAlm) :: A
+       Type(HealpixPower):: P, PS
+       real(dp) testvar, MaxN, MaxNP
+       Type(HealpixMap) :: NoiseSim, Signal, Noise, SigNoiseSim
+       character(LEN=4) :: sim_no
+       character(LEN=256) :: fname, detector_name
+       integer i,detector, neighbours(8), nneigh, j, nav, nin
+       real fake_noise_fac 
+       real pixav(9)
+        
+         print *,'adding maps'
+         
+        call HealpixMap_Nullify(NoiseSim)
+        call HealpixMap_Nullify(Noise)
+        call HealpixMap_Nullify(Signal)
+        call HealpixMap_Nullify(SigNoiseSim)
+         
+!        do i=1,9
+!        call HealpixMap_Read(NoiseSim,concat(input_data_dir,'mc_noise/ctp3.nmc.0000'//trim(IntToStr(i))//'.mm2048.fits'))
+!        NoiseSim%TQU=NoiseSim%TQU * map_scale/mK;
+!        call HealpixMap2Alm(H,NoiseSim, A, lmax, dopol =  .true.)
+!        call HealpixAlm2Power(A, P)
+!        if (i==1) then
+!          call HealpixPower_assign(PS,P)
+!        else
+!          PS%Cl = PS%Cl + P%Cl
+!        end if
+!        call HealpixPower_Write(P,'fullsky_noise_cls_'//trim(sim_no)//'.dat')
+!        call HealpixMap_Free(NoiseSim)
+!        call HealpixAlm_Free(A)
+!        
+!        end do
+!        PS%Cl = PS%Cl / 9
+!        call HealpixPower_Write(PS,'fullsky_noise_avcls.dat')
+!        
+!        return
+        
+        call InitRandom()
+
+       ! call HealpixMap_Read(NoiseSim,concat(input_data_dir,'ctp3.nmc.00000.mm2048.fits'))
+       ! call HealpixMap2Alm(H,NoiseSim, A, lmax,dopol =  .true.)
+       ! call HealpixAlm2Power(A, P)
+       ! call HealpixPower_Write(P,'0000mm_noise_cls.dat')
+       ! call MpiStop()
+        
+        call HealpixMap_Read(Signal,trim(input_data_dir)//'mc_cmb/cl_ctp_alm_'//trim(sim_no)//'_RJ_map.fits')
+        call HealpixMap_ForceRing(Signal)
+        call HealpixMap2Alm(H,Signal, A, lmax,dopol =  .true.)
+        call HealpixAlm2Power(A, P)
+        call HealpixPower_Write(P,trim(sim_no)//'_input_cls.dat')
+
+      !  call HealpixMap_Write(Noise,trim(input_data_dir)//'diag_noise_maps.fits', .true.)
+
+        do detector =1,2
+        nin = 9
+        if (detector==3) then
+         detector_name = 'mm'
+         nin= 3        
+        else if (detector==0) then
+         detector_name = 'sm'        
+        else if (detector==1) then
+         detector_name = '1357.sm'
+        else
+         detector_name = '2468.sm'
+        end if
+
+        call HealpixMap_Read(NoiseSim,concat(input_data_dir,'mc_noise/ctp3.nmc.0',trim(sim_no),'.',detector_name,'2048.fits'))
+        call HealpixMap_ForceNest(NoiseSim)
+        do i=0, NoiseSim%npix
+         if (any(NoiseSim%TQU(i,:)==fmissval)) then
+           call neighbours_nest(NoiseSim%nside,i,neighbours,nneigh)
+           nav = 0
+           pixav =0
+           do j=1, nneigh
+            if (NoiseSim%TQU(j,1) /= fmissval) then
+              nav = nav+1
+              pixav(1:nin) = pixav(1:nin) + NoiseSim%TQU(j,1:nin)
+            endif
+            if (nav >0) then
+             NoiseSim%TQU(i,:) = pixav(1:nin) / nav
+             !unclear what to do with the noise variance, just average for now - doesn't matter much for cross spectra
+            else
+             print *,'all near pixels missing, detector '//trim(detector_name)
+            end if             
+           end do
+         end if
+        end do
+        
+        call HealpixMap_ForceRing(NoiseSim)
+
+        call HealpixMap_Assign(SigNoiseSim,Signal);
+
+        !Fake noise not currently used
+        fake_noise_fac = 10 
+        MaxN = fake_noise_fac*maxval(NoiseSim%TQU(:,4), mask = NoiseSim%TQU(:,4)/=fmissval)
+        MaxNP = fake_noise_fac*maxval(NoiseSim%TQU(:,7), mask = NoiseSim%TQU(:,7)/=fmissval)
+        
+        where (NoiseSim%TQU(:,1) /= fmissval)
+         SigNoiseSim%TQU(:,1) = Signal%TQU(:,1) + NoiseSim%TQU(:,1)
+        elsewhere
+         SigNoiseSim%TQU(:,1) = Gaussian1()* sqrt(MaxN)
+         NoiseSim%TQU(:,4) = MaxN
+        end where
+        where (NoiseSim%TQU(:,2) /= fmissval)
+         SigNoiseSim%TQU(:,2) = Signal%TQU(:,2) + NoiseSim%TQU(:,2)
+        elsewhere
+         SigNoiseSim%TQU(:,2) = Gaussian1()* sqrt(MaxNP)
+         NoiseSim%TQU(:,7) = MaxNP
+        end where
+        where (NoiseSim%TQU(:,3) /= fmissval)
+         SigNoiseSim%TQU(:,3) = Signal%TQU(:,3) + NoiseSim%TQU(:,3)
+        elsewhere
+         SigNoiseSim%TQU(:,3) = Gaussian1()* sqrt(MaxNP)
+         NoiseSim%TQU(:,9) = MaxNP
+        end where
+
+        if (detector/=3) then
+         call HealpixMap_Init(Noise, npix,pol = .true.)
+         Noise%TQU(:,1) = NoiseSim%TQU(:,4)
+         Noise%TQU(:,2) = NoiseSim%TQU(:,7)
+         Noise%TQU(:,3) = NoiseSim%TQU(:,9)        
+         fname = concat(input_data_dir,'ctp3_noise_',trim(sim_no),'_d',IntToStr(detector),'.fits')
+         call HealpixMap_Write(Noise,fname, .true.)             
+        end if
+        if (detector==3) then
+         fname = concat(input_data_dir,'ctp3_tot_',trim(sim_no),'_mm.fits')
+        else
+         fname = concat(input_data_dir,'ctp3_tot_',trim(sim_no),'_d',IntToStr(detector),'.fits')
+        end if
+        call HealpixMap_Write(SigNoiseSim,fname, .true.)        
+
+        end do
+        call HealpixMap_Free(NoiseSim)
+        call HealpixMap_Free(Noise)
+        call HealpixMap_Free(Signal)
+        call HealpixMap_Free(SigNoiseSim)
+       
+!      
+!        call HealpixMap_Read(NoiseSim,concat(input_data_dir,'ctp3.nmc.00000.mm2048.fits'))
+!        print *,'n noise maps = ',NoiseSim%nmaps
+!        call HealpixMap_ForceRing(NoiseSim)
+!      
+!       if (.true.) then
+!        NoiseSim%TQU = NoiseSim%TQU*map_scale/mK
+!        Noise%TQU = Noise%TQU*(map_scale/mK)**2
+!        print *, 'avg noise', sqrt(sum(Noise%TQU(:,1))/Noise%npix)
+!        testvar = sum( dble(NoiseSim%TQU(:,1))/sqrt(Noise%TQU(:,1)), mask = Noise%TQU(:,1)>0) / &
+!                     count(Noise%TQU(:,1)>0)  
+!        print *, 'mean TT = ', testvar        
+!        testvar = sum( dble(NoiseSim%TQU(:,1)), mask = Noise%TQU(:,1)>0) / &
+!                     count(Noise%TQU(:,1)>0)  
+!        print *, 'mean TT = ', testvar       
+!        NoiseSim%TQU(:,1) = NoiseSim%TQU(:,1) - testvar
+!        testvar = sum( dble(NoiseSim%TQU(:,1))**2/Noise%TQU(:,1), mask = Noise%TQU(:,1)>0) / &
+!                     count(Noise%TQU(:,1)>0)        
+!        print *,'TT noise test:', testvar             
+!        testvar = sum( dble(NoiseSim%TQU(:,2))**2/Noise%TQU(:,2), mask = Noise%TQU(:,2)>0) / &
+!                     count(Noise%TQU(:,2)>0)        
+!        print *,'QQ noise test:', testvar             
+!        testvar = sum( dble(NoiseSim%TQU(:,3))**2/Noise%TQU(:,3), mask = Noise%TQU(:,3)>0) / &
+!                     count(Noise%TQU(:,3)>0)        
+!        print *,'UU noise test:', testvar          
+!        print *, 'UU-QQ', sum( dble(Noise%TQU(:,3)-Noise%TQU(:,2))**2/Noise%TQU(:,2)**2, mask = Noise%TQU(:,2)>0) / &
+!                     count(Noise%TQU(:,2)>0)        
+!        call MpiStop()  
+!       end if  
+
+       ! call HealpixMap2Alm(H,SigNoiseSim, A, lmax*2, dopol =  .true.)
+       !! call HealpixAlm2Power(A, P)
+   !     call HealpixPower_Write(P,'test_noise_cls.dat')
+      end subroutine AddPlanckSimMaps
+    
+     subroutine FillHoles(M)
+      !Fill missing pixels with average of surrounding pixels
+          use pix_tools
+      Type(HealpixMap) :: M
+      integer i
+      integer neighbours(8), nneigh, j, nav
+      real pixav(9)
+      integer nin
+      
+      nin= M%nmaps
+      
+        call HealpixMap_ForceNest(M)
+        do i=0, M%npix
+         if (any(M%TQU(i,:)==fmissval)) then
+           call neighbours_nest(M%nside,i,neighbours,nneigh)
+           nav = 0
+           pixav =0
+           do j=1, nneigh
+            if (M%TQU(j,1) /= fmissval) then
+              nav = nav+1
+              pixav(1:nin) = pixav(1:nin) + M%TQU(j,1:nin)
+            endif
+            if (nav >0) then
+             M%TQU(i,:) = pixav(1:nin) / nav
+             !unclear what to do with the noise variance, just average for now - doesn't matter much for cross spectra
+            else
+             print *,'all near pixels missing  '
+            end if             
+           end do
+         end if
+        end do
+        call HealpixMap_ForceRing(M)
+
+     end subroutine FillHoles  
+   
+   
+     subroutine SplineSmoothSampleArray(vec,n)
+      use Cubic_Spline_GCV
+     !Assume normalized to approximately 1
+      Type (HealpixPower) :: P , P2
+      integer n,l
+      REAL(DP) vec(:), X(n), DF(n), Y(n), C(n-1,3), &
+       var, Wk(7*(n + 2)), SE(n)
+      INTEGER IC,JOB,IER
+      
+ 
+        IC = n-1
+        Job = 1
+        var = -1
+        do l=1,n
+         x(l) = l
+     !   vec(l) = P%Cl(l+1,1)/P2%Cl(l+1,1)
+         DF(l) = 1        
+        end do
+        call CUBGCV(X,vec,DF,N,Y,C,IC,VAR,JOB,SE,WK,IER)         
+        do l=1,n-1
+         vec(l) = Y(l)
+        end do
+        
+!        call CreateTxtFile('z:\interp.txt',2)  
+!        do l=2,lmax-1
+!           print *,l,Y(l-1)
+!           write (2,'(1I7, 2E15.5)') l,P%Cl(l,1)/P2%Cl(l,1), Y(l-1)
+!        end do
+!        print *,'err = ', IER
+!        pause
+!        stop
+         
+     end subroutine SplineSmoothSampleArray
+   
+     subroutine SplineFitCl(P, Template)
+      Type(HealpixPower) :: P, Template
+      integer i,nl
+      real(dp) vec(P%lmax-1)
+      
+      print *,'spline fit cl'
+      nl = P%lmax -1
+      do i=C_T, C_C
+       print *, 'i=', i
+        if (i==C_C .and. .not. all(Template%Cl(2:P%lmax,i)>0)) then
+          !not a variance
+          cycle
+        end if
+        vec = P%Cl(2:P%lmax,i)/Template%Cl(2:P%lmax,i)
+        call SplineSmoothSampleArray(vec, nl)
+        P%Cl(2:P%lmax,i) = vec*Template%Cl(2:P%lmax,i)
+        if (.not. P%pol) exit     
+      end do
+      print *,'end spline fit cl'
+
+     end subroutine SplineFitCl
+
+  
 end module WeightMixing
+
+    subroutine DoINit
+     use MPIstuff
+     integer i,ix
+     call mpi_init_thread(MPI_THREAD_FUNNELED,ix,i)  
+      print *,'mpi_init_thread',MPI_THREAD_FUNNELED,ix,i
+
+    end subroutine DoINit
 
 
 program WeightMixer
@@ -1973,22 +2259,24 @@ program WeightMixer
  implicit none
  Type(HealpixMap), allocatable ::  WMaps(:)
  Type(HealpixInfo)  :: H
- Type(HealpixMap)   :: M, CutM, Mask, GradPhi
+ Type(HealpixMap)   :: M, CutM, Mask, MaskPol, GradPhi
  Type(HealpixMap), allocatable, target   :: MapArray(:)
  Type(HealpixPower) :: PBinnedDiag, PUnlensed, PFid, P, PSim, &
-            CAvg, CSkew, CAvgTemp,CVar,Chat, HybridNoise, HybridP, DataCl
- Type(HealpixPower) :: SigNoiseCov, SignalCov, NoiseCov, NEff, fSkyEff
- Type(HealpixPower), dimension(:), allocatable ::CovP, MaskP
+            CAvg, CSkew, CAvgTemp,CVar,CoffVar,Chat, HybridNoise, HybridP, DataCl, DiagCov
+ Type(HealpixPower) :: SigNoiseCov, OffDiagCov,SignalCov, NoiseCov, NEff, fSkyEff
+ Type(HealpixPower), dimension(:,:), allocatable :: MaskP
+ Type(HealpixPower), dimension(:,:), allocatable :: CovP
+ 
  Type(HealpixAlm)   :: A, A2
  Type (TCouplingMatrix), target :: dummycoupler(1)
 
  Type(HealpixMap), pointer :: Map1,Map2, amap, NoiseMap 
- Type(HealpixCrossPowers) :: CovPowers, MaskPowers 
+ Type(HealpixCrossPowers) :: CovPowers, MaskPowers, MaskPowersAll 
  
  Type(HealpixMap) :: BinaryMask
  integer rand_seed
  character(LEN=32) :: weights(5)
- character(LEN=256)  :: input_data_dir,  NuMStr,cache_name,mask_fname
+ character(LEN=256)  :: NuMStr,cache_name,mask_fname
  character(LEN=256)  :: l_stem, cls_file, cls_unlensed_sim_file, cls_unlensed_sim_file_tensor, &
         fid_cls_file, out_file_base, out_file_root, sim_map_file, analysis_root, anastem
  character(LEN=256)  :: beamfile,sim_stem, covstem
@@ -2002,13 +2290,13 @@ program WeightMixer
  Type(TCovMat) :: LensedCov,ACovHybrid
  real(DP) noise_fac, chisq, mask_lowl_fwhm
  real(dp), allocatable :: tmp(:,:), tmp2(:,:),tmpcov(:,:), simcov(:,:)
- real(dp), allocatable :: bigVec(:)
+ real(dp), allocatable :: bigVec(:), bigVec2(:)
  real(SP) fac
  integer l,ix,j
  integer ix1,ix2, chan1,chan2,x,y
  
  Type (HealpixPower) :: PointSourceP
- logical :: get_covariance, get_sim, get_analysis, get_hybrid = .true.
+ logical :: get_covariance, get_sim, get_analysis
  logical :: wmap_like_files = .false.
  logical :: cache_couple = .false.
  integer MpiID, MpiSize, nsim, sim_no
@@ -2027,6 +2315,16 @@ program WeightMixer
  logical :: get_noise_covariance = .false.
  character(LEN=16) :: action = ''
  integer cl_sample_unit
+ logical :: use_openmp = .true.
+ integer mkl_threads, max_threads
+ character(LEN=4) add_planck_sim
+ real(dp) :: noise_adjustment = 1.d0
+ integer, parameter :: smooth_w = 2
+ real :: smooth_kernel(-smooth_w*2:smooth_w*2)
+
+  
+ !$ integer, external :: omp_get_max_threads
+
 ! character(LEN=2000) :: inline
 ! real count1
 ! integer count
@@ -2043,13 +2341,21 @@ program WeightMixer
 ! end do 
 ! stop
 
-
 #ifdef MPIPIX
- call mpi_init(i)
- 
+! call mpi_init(i)
+ call DoINit
 #endif
-
   call GetMpiStat(MpiID, MpiSize)
+
+  !$ if (use_openmp .and. MPiID==0) then
+  !$ max_threads = min(16,omp_get_max_threads())
+  !$ mkl_threads = max_threads
+  !$ print *, 'max_threads = ', max_threads 
+  !$ end if 
+
+  !$ call omp_set_nested(0)
+  !$ call omp_set_dynamic(1)
+  !$ call omp_set_num_threads(1)
 
  Ini_Fail_On_Not_Found = .true.
  call Ini_Open(GetParam(1), 3,err)
@@ -2059,6 +2365,30 @@ program WeightMixer
 #endif
    stop 'No ini'
  end if
+
+!        print *,'starting', MpiId
+!        if (MpiID==0) then
+!         StTime = GeteTime()  
+!         !$ if (Ini_read_logical('threads')) call omp_set_num_threads(max_threads)
+!
+!          do i=1,3
+!          
+!          mat1=0
+!          mat2=i
+!          mat3=4
+!          mat2(2,1)=1.001
+!         ! Mat1=matmul(mat2,mat3)
+!         ! print *, sum(Mat1)
+!          call Matrix_Mult_NT(mat1,mat2,mat3)
+!          
+!          end do
+!          print *,'time = ',  GeteTime()   - StTime         
+!        else
+!                 call sleep(2)
+!        end if
+!          print *,'Ending', MpiID
+!         call MpiBarrier
+!         call MpiStop()
 
  nside  = Ini_Read_Int('nside')
  npix = 12*nside**2
@@ -2096,7 +2426,7 @@ program WeightMixer
  else if (map_unit == 'muK') then
   map_scale = 1.d0
  else
-  call MpiStop('unknown map unit')  
+  read(map_unit,*) map_scale  
  end if
  fid_cls_file = Ini_read_String('fid_cls_file')
 
@@ -2105,6 +2435,11 @@ program WeightMixer
  analysis_root = Ini_read_String('analysis_root',.false.)
  
  want_pol = Ini_Read_Logical('want_pol')
+ if (want_pol) then
+   pol_maps = 3
+ else 
+  pol_maps = 1
+ end if   
  rand_seed = Ini_Read_Int('rand_seed')
  
  !Read in arcminute, internally in degrees
@@ -2119,18 +2454,40 @@ program WeightMixer
  noise = Ini_read_real('noise')/mK**2
  fake_noise = Ini_read_real('fake_noise')/mK**2
  ENoiseFac = Ini_read_real('noise_E_fac')
-
+ noise_colour_factor = Ini_read_Real('noise_colour_factor',0.0)
+ 
  beam_transfer = Ini_read_Logical ('beam_transfer')
 
  year_filename_format = trim(input_data_dir)//Ini_Read_String('year_filename_format')
 
+ Ini_Fail_On_Not_Found = .false.
+ 
+ data_var = Ini_Read_String('data_var')
+ noise_adjustment = Ini_read_Double('noise_adjustment',1.d0)
+
  !combined_filename_format is computed maps for each detector added over years
- combined_filename_format = trim(data_dir)//trim(ExtractFileName(year_filename_format))
- call StringReplace('%YEAR%',trim(IntToStr(nyears))//'years',combined_filename_format)
- noise_filename_format = combined_filename_format
+ detector_filename_format = Ini_read_String('detector_filename_format')
+ if (detector_filename_format /= '') then 
+   detector_filename_format = trim(input_data_dir)//detector_filename_format
+ else  
+   detector_filename_format = trim(data_dir)//trim(ExtractFileName(year_filename_format))
+   call StringReplace('%YEAR%',trim(IntToStr(nyears))//'years',detector_filename_format)
+ end if
+ 
+ detector_noise_filename_format = Ini_Read_String('detector_noise_filename_format')
+ if (detector_noise_filename_format == '') then 
+  detector_noise_filename_format = detector_filename_format
+ else 
+  detector_noise_filename_format= trim(input_data_dir)//trim(detector_noise_filename_format)
+ end if
+ year_noise_filename_format = Ini_Read_String('year_noise_filename_format')
+ if (year_noise_filename_format /='') then 
+  year_noise_filename_format= trim(input_data_dir)//trim(year_noise_filename_format)
+ end if
  
  beam_filename_format = trim(input_data_dir)//Ini_Read_String('beam_filename_format')
  
+ noise_from_hitcounts = Ini_read_Logical('noise_from_hitcounts',.false.)
  nchannels = Ini_read_Int('nchannels')
  allocate(Channels(nchannels))
  do i = 1, nchannels
@@ -2138,8 +2495,12 @@ program WeightMixer
   Channels(i)%Count = Ini_read_int_array('channel_count',i)
   Channels(i)%Ghz = Ini_read_Double_Array('channel_Ghz',i)
   allocate(Channels(i)%sig0(Channels(i)%Count))
-  NumStr = Ini_read_String_Array('noise_sig0',i)
-  read(NumStr,*) Channels(i)%sig0
+  if (noise_from_hitcounts) then
+   NumStr = Ini_read_String_Array('noise_sig0',i)
+   read(NumStr,*) Channels(i)%sig0
+  else
+    Channels(i)%sig0 = 1
+  end if 
   Channels(i)%Beam%beam_transfer = beam_transfer
   if (.not. beam_transfer) then
     Channels(i)%Beam%fwhm = Ini_read_real('fwhm')/60  !Read in arcminute, internally in degrees
@@ -2148,6 +2509,8 @@ program WeightMixer
  end do
 
  Ini_Fail_On_Not_Found = .false.
+ 
+ add_planck_sim = Ini_read_String('add_planck_sim')
  
  wmap_like_files = Ini_read_logical('wmap_like_files', .false.)
  
@@ -2173,12 +2536,15 @@ program WeightMixer
  cross_spectra = Ini_Read_Logical('cross_spectra')
  
  w8name = Ini_Read_String('w8dir')
+ no_pix_window = Ini_read_Logical('no_pix_window', .false.)
  
  if (uniform_noise) then
   nweights = 1
   lmin_hybrid_calc = lmin 
  end if  
  Ini_Fail_On_Not_Found= .false.
+ 
+ mkl_threads = Ini_Read_Int('mkl_threads',1)
  
  action = Ini_read_String('action')
  
@@ -2188,20 +2554,45 @@ program WeightMixer
  check_cls_file2 = Ini_read_String('check_cls_file2')
  
  fits_mask = trim(input_data_dir)//Ini_read_String('unapodized_mask')
- processing_mask = trim(input_data_dir)//Ini_read_String('processing_mask')
- inv_noise_map = trim(input_data_dir)//Ini_Read_String('inv_noise_map')
+ if (want_pol) then
+  fits_mask_pol = trim(input_data_dir)//Ini_read_String('unapodized_mask_pol')
+  pol_weights = fits_mask /= fits_mask_pol
+ end if
  
+ processing_mask = trim(input_data_dir)//Ini_read_String('processing_mask')
+ processing_mask_badpix = Ini_read_Logical('processing_mask_badpix', .false.)
+ if (.not. processing_mask_badpix .and. processing_mask/='') &
+  processing_mask_map = Ini_read_Int('processing_mask_map',1)
+ 
+ noise_map_for_window = Ini_Read_String('noise_map_for_window')
+ if (noise_map_for_window /='') noise_map_for_window = trim(input_data_dir)//trim(noise_map_for_window )
  cls_file = Ini_Read_String('cls_file')
  cls_unlensed_sim_file = Ini_read_string('cls_unlensed_sim_file')
  cls_unlensed_sim_file_tensor =  Ini_read_string('cls_unlensed_sim_file_tensor')
 
  do_exact_like = Ini_Read_Logical('do_exact_like')
+ want_cl = .true.
  
  if (do_exact_like) then
+  want_cl  = Ini_read_Logical('do_cl')
+  WellSupported_txt  = Ini_read_string('min_support')
   WellSupported  = Ini_read_real('min_support')
-  print *,'min_support = ', WellSupported
+  if (MpiID==0) print *,'min_support = ', WellSupported
+  exact_SN_cut = Ini_read_Real('exact_SN_cut')
+  exact_SN_cut_txt = Ini_read_String('exact_SN_cut')
+  if (MpiID==0) print *,'SN cut = ', exact_SN_cut
+  test_big_cut = Ini_Read_Logical('test_big_cut')
   l_exact = Ini_read_Int('l_exact')
   l_exact_margin = Ini_read_Int('l_exact_margin')
+  exact_tag = Ini_Read_String('exact_tag') 
+  get_exact_cl = Ini_read_logical('get_exact_cl')
+  zero_from_l = Ini_read_Int('zero_from_l')
+  project_l01 = Ini_read_logical('project_l01')
+  if (get_exact_cl) then
+   exact_cl_lmin = Ini_read_int('exact_cl_lmin')
+   exact_cl_lmax = Ini_read_int('exact_cl_lmax') 
+  end if
+  if (exact_tag/='') exact_tag = trim(exact_tag)//'_'
  end if
  
  call Ini_Close
@@ -2229,10 +2620,27 @@ program WeightMixer
 
 
  fits_mask = FormatFilename(fits_mask)
+ fits_mask_pol = FormatFilename(fits_mask_pol)
+
  processing_mask = FormatFilename(processing_mask)
  
 
 !############### Do Stuff #####################
+
+! call HealpixMap_Read(BinaryMask, '/home/cosmos-tmp/aml1005/data/planck/mask_gal_CF857GHz_41pc.fits')
+! call HealpixMap_Read(Mask, '/home/cosmos-tmp/aml1005/data/planck/mask_L3_v40.fits')
+! BinaryMask%TQU=BinaryMask%TQU*Mask%TQU
+! call HealpixMap_Write(BinaryMask, '/home/cosmos-tmp/aml1005/data/planck/mask_gal_CF857GHz_41pc_x_mask_L3_v40.fits')
+! stop
+  
+!  call CombineSplitNoiseMaps('/home/cosmos/users/aml1005/data/planck/MAP_v41_2048_GALACTIC_0240_11400_217Ghz')
+!  call CombineSplitNoiseMaps('/home/cosmos/users/aml1005/data/planck/MAP_v41_2048_GALACTIC_0240_11400_143Ghz')
+!  call CombineSplitNoiseMaps('/home/cosmos/users/aml1005/data/planck/MAP_v41_2048_GALACTIC_0240_11400_100Ghz')
+!  call MpiStop()
+
+#ifdef MKLTHREADS
+ call mkl_set_num_threads(1)
+#endif
 
  ncrossweights = nweights*(nweights+1)/2
  ncl_tot = nweights*nchannels*(nweights*nchannels+1)/2
@@ -2241,18 +2649,24 @@ program WeightMixer
     else
     vec_size=1
  end if
-
- !Get azimuthally averaged noise map
-! call HealpixInit(H,nside, lmax,.true., w8dir=w8name,method=division_balanced) 
-! if (H%MpiID ==0) then !if we are main thread
-!   call AzimuthalMap(H, inv_noise_map)
-! end if
-! call MpiStop('')
+ if (cross_spectra) then
+  cross_noise_scale = 1 + 1/(real(TotYearWeightMaps())/nweights-1)
+  if (MpiID==0) print *,'naive cross-noise scaling : ', cross_noise_scale
+ end if
+   !This scaling is by analogy with the exact full sky case, see appendix C of Hammimeche & Lewis
+ 
+!  call DifferenceMaps        
 
  call HealpixInit(H,nside, 2*lmax,.true., w8dir=w8name,method=division_balanced) 
 
  if (H%MpiID ==0) then !if we are main thread
  
+     !print *,'start'
+      if (add_planck_sim /= '') then
+      call AddPlanckSimMaps(H, add_planck_sim)
+      call MpiStop()
+      end if 
+           
         print *,'Using nside = ', nside
         print *,'Point source A = ', point_source_A, ' +- ',point_source_A_frac_error*100,'%'
 
@@ -2260,91 +2674,57 @@ program WeightMixer
           if (Channels(channel)%Beam%beam_transfer) then
             beamfile = FormatFilename(beam_filename_format,Channels(channel)%Name) 
             call ReadBeams(Channels(channel), beamfile, lmax)
+          else
+            call SetGaussianBeams(Channels(channel), lmax)
           end if
           Channels(channel)%PtSrcA =  PtScrcA(channel,channel)
           print *,'Channel '//trim(Channels(Channel)%Name)//' point source A = ', Channels(channel)%PtSrcA 
         end do
-        call PixSmoothBeams(lmax)
+        if (.not. no_pix_window) call PixSmoothBeams(lmax)
 
+        print *,'done beams'
+         
         if (apodize_mask_fwhm/=0.d0) then
         
-        mask_fname = trim(data_dir)//trim(IntToStr(lmax))//'_nside'//trim(IntTOStr(nside))//'_fwhm' &
-          //trim(RealToStr(real(apodize_mask_fwhm),4))//'_mask.fits'
-        file_stem = trim(file_stem)//'_apo'
-        l_stem = trim(l_stem)//'_apo'
         
-        if (.not. FileExists(mask_fname)) then  
-          
-            print *,'Reading BinaryMask'
-            call HealpixMap_Nullify(BinaryMask)
-            call HealpixMap_Read(BinaryMask, fits_mask) 
-            !Note cut map is the second map, first map is empty
+         mask_fname = trim(data_dir)//trim(IntToStr(lmax))//'_nside'//trim(IntTOStr(nside))//'_fwhm' &
+           //trim(RealToStr(real(apodize_mask_fwhm),4))
+         file_stem = trim(file_stem)//'_apo'
+         l_stem = trim(l_stem)//'_apo'
 
-            if (BinaryMask%nside /= nside) print *, 'Upgrading '
-            call HealpixMap_udgrade(BinaryMask, Mask, nside, pessimistic=.false.)
-            call HealpixMap_Free(BinaryMask)
-            call HealpixMap_ForceRing(Mask)
-
-            print *,'generating apodised high-res mask'  
-            call HealpixMap2Alm(H,Mask, A, (lmax*3)/2, map_ix=2)
-            call HealpixAlm_Smooth(A,apodize_mask_fwhm)
-            call HealpixAlm2Map(H,A,Mask,npix)
-
-            print *,'minmax mask = ', minval(Mask%TQU), maxval(Mask%TQU)
-!Note to get variance right we need w^2 to have not too much high frequency.
-            Mask%TQU  = max(0.,Mask%TQU*1.2-0.1)  
-            Mask%TQU  = min(1.,Mask%TQU)  
- 
-            call HealpixMap_Smooth(H, Mask, Mask, 2*lmax, apodize_mask_fwhm/2)
-            print *,'minmax mask = ', minval(Mask%TQU), maxval(Mask%TQU)
-            Mask%TQU  = max(0.,Mask%TQU)
-            
-            if (processing_mask /='') then
-             !Make sure exactly zero in zero-hit pixels
-             call HealpixMap_Nullify(BinaryMask)
-             call HealpixMap_Read(BinaryMask, processing_mask) 
-             call HealpixMap_ForceRing(BinaryMask)
-             if (BinaryMask%npix /= Mask%npix) Call MpiStop('processing mask not right res')             
-             where (BinaryMask%TQU(:,2)==0) 
-              Mask%TQU(:,1)=0
-             end where
-             call HealpixMap_Free(BinaryMask)
-            end if  
-            
-            call HealpixVis_Map2ppmfile(Mask, 'outfiles/mask.ppm')
-
-            call HealpixMap_Write(MAsk,mask_fname)
-          
-            print *,'minmax mask = ', minval(Mask%TQU), maxval(Mask%TQU)
-        else    
-           
-           print *,'Reading cached mask'
-           call HealpixMap_Nullify(Mask)
-           call HealpixMap_Read(Mask,mask_fname)
-            print *,'minmax mask = ', minval(Mask%TQU), maxval(Mask%TQU)
-       
-        end if
+         call GetApodizedMask(H,Mask,trim(mask_fname)//'_'//trim(ExtractFileName(fits_mask)),fits_mask)
+         if (pol_weights) then
+          call GetApodizedMask(H,MaskPol,trim(mask_fname)//'_'//trim(ExtractFileName(fits_mask_pol)),fits_mask_pol)
+         end if
            
         else
          !Don't apodize mask
             print *,'Reading BinaryMask'
-             call HealpixMap_Read(BinaryMask, fits_mask) 
-            !Note cut map is the second map, first map is empty
-
-            print *, 'Upgrading '
+            call HealpixMap_Read(BinaryMask, fits_mask)
+             print *, 'Upgrading '
             call HealpixMap_udgrade(BinaryMask, Mask, nside, pessimistic=.true.)
             call HealpixMap_Free(BinaryMask)
-            call HealpixMap_SetToIndexOnly(Mask,2)
+            call HealpixMap_SetToIndexOnly(Mask,min(Mask%nmaps,2))
             call HealpixMap_ForceRing(Mask)
-
-      end if
+            if (pol_weights) then
+             call HealpixMap_Read(BinaryMask, fits_mask_pol)
+             print *, 'Upgrading '
+             call HealpixMap_udgrade(BinaryMask, MaskPol, nside, pessimistic=.true.)
+             call HealpixMap_Free(BinaryMask)
+             call HealpixMap_SetToIndexOnly(MaskPol,min(MaskPol%nmaps,2))
+             call HealpixMap_ForceRing(MaskPol)
+            end if
+            
+       end if
     
-
     do channel= 1, nchannels
         call CombineYears(Channels(channel))
         if (est_noise) call EstAndSetNoise(Channels(channel))
         call ProcessNoiseMaps(H, Channels(Channel))
     end do 
+    
+    if (want_cl) then
+    
     call GetSmoothedNoise(H)
 
     if (fullsky_test) then
@@ -2360,9 +2740,16 @@ program WeightMixer
 
        
    allocate(WeightMaps(nweights))
+   if (pol_weights) then
+    allocate(WeightMapsPol(nweights))
+   end if
    do i=1,nweights
      call HealpixMap_Nullify(WeightMaps(i))
      call HealpixMap_Assign(WeightMaps(i),Mask)
+     if (pol_weights) then
+      call HealpixMap_Nullify(WeightMapsPol(i))
+      call HealpixMap_Assign(WeightMapsPol(i),MaskPol)
+     end if
      
      if (weights(i)=='uniform') then
 
@@ -2371,12 +2758,20 @@ program WeightMixer
       meanN = sum(SmoothedNoise%TQU(:,1), mask=SmoothedNoise%TQU(:,1) > 0)/count(SmoothedNoise%TQU(:,1) > 0)
       print *,'mean smoothed noise = ', meanN 
       print *, 'sum mask', sum(WeightMaps(i)%TQU(:,1)) !this stops ifort 10.1 crashing on next line ???
-      where (SmoothedNoise%TQU(:,1) > 0)
+      where (WeightMaps(i)%TQU(:,1)>0 .and. SmoothedNoise%TQU(:,1) > 0)
        WeightMaps(i)%TQU(:,1) = WeightMaps(i)%TQU(:,1)*meanN/( SmoothedNoise%TQU(:,1) )
       end where
-  
-     else if (weights(i)=='mixedinvnoise') then
+      print *, 'min/max Weightmap', minval(WeightMaps(i)%TQU(:,1)),maxval(WeightMaps(i)%TQU(:,1))
 
+      if (pol_weights) then
+       where (WeightMapsPol(i)%TQU(:,1)>0 .and. SmoothedNoise%TQU(:,1) > 0)
+        WeightMapsPol(i)%TQU(:,1) = WeightMapsPol(i)%TQU(:,1)*meanN/( SmoothedNoise%TQU(:,1) )
+       end where
+      end if
+      
+     else if (weights(i)=='mixedinvnoise') then
+      
+       call MpiStop('mixedinvnoise assumed not used')
        meanN = sum(SmoothedNoise%TQU(:,1), mask=SmoothedNoise%TQU(:,1) > 0)/count(SmoothedNoise%TQU(:,1) > 0)
        WeightMaps(i)%TQU(:,1) = WeightMaps(i)%TQU(:,1)*meanN/(SmoothedNoise%TQU(:,1)+meanN)
      
@@ -2388,20 +2783,41 @@ program WeightMixer
   
    call HealpixMap_Free(SmoothedNoise)    
 
-   if (action/= pixtest .and. .not. do_exact_like) call HealpixMap_Free(Mask)    
- 
+   if (action/= pixtest .and. .not. do_exact_like) then
+    call HealpixMap_Free(Mask)    
+    if (pol_weights) call HealpixMap_Free(MaskPol)
+   end if
+   
    print *,'Getting new weights power'
-   call HealpixMapSet2CrossPowers(H, WeightMaps, MaskPowers, nweights, lmax*2)
+   if (.not. pol_weights) then
+    call HealpixMapSet2CrossPowers(H, WeightMaps, MaskPowers, nweights, lmax*2,.false.)
+   else
+    allocate(WeightMapsAll(nweights*2))
+    do i=1, nweights
+     WeightMapsAll(i) = WeightMaps(i)
+     WeightMapsAll(i+nweights) = WeightMapsPol(i)     
+    end do
+    call HealpixMapSet2CrossPowers(H, WeightMapsAll, MaskPowersAll, 2*nweights, lmax*2,.false.)
+    deallocate(WeightMapsAll) 
+   end if 
     
    if (get_covariance) then 
        print *,'getting weight powers for the covariance'
-       call PseudoCl_WeightsToCovPowers(H, WeightMaps, Channels, CovPowers, nweights, lmax*2)
+       call PseudoCl_WeightsToCovPowers(H, WeightMaps, WeightMapsPol, Channels, CovPowers, nweights, lmax*2, pol_weights)
+!       if (pol_weights) then
+!         !Pol T should give ordering with weight T_1 E_2 etc not T_2 E_1
+!!         call PseudoCl_WeightsToCovPowers(H, WeightMapsPol, WeightMaps, Channels, CovPowers(2), nweights, lmax*2)
+ !        call PseudoCl_WeightsToCovPowers(H, WeightMapsPol, WeightMapsPol, Channels, CovPowers(3), nweights, lmax*2)
+ !      end if
    end if
+ end if !want_cl
 
-end if  !MpiID=0
 
 if (do_exact_like) then
  !Harmonic low-l exact likelihood (under devel)
+ 
+!  call HealpixMap_Init(NoiseMap, npix,pol = .false.)
+!  NoiseMap%TQU(:,1) = noise*NoiseMap%npix/(HO_fourpi)
  
  print *,'Doing exact with l_exact = ', l_exact, 'margin =', l_exact_margin
  sim_map_file = concat(trim(data_dir)//'sim_map',lmax,'_nside',nside)
@@ -2411,7 +2827,9 @@ if (do_exact_like) then
  call InitRandom(rand_seed)
  RandInited = .true.
 
- if (get_sim .or. .not. FileExists(sim_map_file)) then
+! if (get_sim .or. .not. FileExists(sim_map_file)) then
+   if (get_sim ) then
+ 
   print *,'Simulating map'
   call DeleteFile(sim_map_file)
   call HealpixPower_ReadFromTextFile(PUnlensed,cls_file,lmax,pol=.true.,dolens = .false.)
@@ -2428,54 +2846,51 @@ if (do_exact_like) then
   call HealpixMap_Write(M, sim_map_file)     
   print *,'done map simulation'
  else
-  call HealpixMap_Read(M, sim_map_file)     
- end if               
- 
-  call TestExactlike(H,Mask, NoiseMap, M, fid_cls_file, cls_file)
-  call HealpixMap_Free(Mask)    
+  !call HealpixMap_Read(M, sim_map_file)     
+     
+   print *,'reading map channel 1'
+   do channel = 1, 1
+      call ProcessChannelDatamap(H, Channels(channel), M)
+   end do
+   print *,'read map'
 
-  call mpiStop()               
+ end if               
+ do Channel =1,1
+   call TestExactlike(H,Mask,MaskPol,Channels(Channel)%NoiseMap, M, fid_cls_file, cls_file, Coupler)
+ end do
+ call HealpixMap_Free(Mask)    
+
+ call mpiStop()               
+
 end if
+
+end if  !MpiID=0
+
 call HealpixFree(H)
 
- 
- if (get_covariance .and.  (noise_filename_format/='') ) then
- 
-   if (MpiID==0) then
-     print *,'Getting matrices for covariance'
-    !Note we don't need all if nchanells >1 because noise is assumed uncorrelated between channels
-    !Note covariance is calculated for combined year maps
-      
-    ncovpower = (nchannels+1)*ncrossweights * ((nchannels+1)*ncrossweights+1)/2
-   
-    allocate(CovP(nCovPower))
-    call CrossPowersToHealpixPowerArray(CovPowers, CovP, dofree=.true.)
-     !get all for simplicity, but not all entries are used (noise indep between channels)
-
-    allocate(XiMatrices(nCovPower))
-   else
-     XiMatrices => dummycoupler
-   end if
-   call PseudoCl_GetCouplingMatrixArr(XiMatrices, CovP, lmin, lmax, want_pol,ncovpower) !parallelized
-   
- end if
  
  if (MpiID==0) then
 
    print *,'Getting coupling matrix'
-   allocate(MaskP(ncrossweights))
-   call CrossPowersToHealpixPowerArray(MaskPowers, MaskP, dofree=.true.)
+   allocate(MaskP(ncrossweights,3))
+   if (.not. pol_weights) then
+    call CrossPowersToHealpixPowerArray(MaskPowers, MaskP(1,1), dofree=.true.)
+   else
+    call CrossPowersToHealpixPowerArray2(MaskPowersAll, MaskP, dofree=.true.)
+   end if
+   print *,' getting coupling matrix arr'   
    allocate(Coupler(ncrossweights))
  else
      Coupler => dummycoupler
   end if
 
-  call PseudoCl_GetCouplingMatrixArr(Coupler, MaskP, lmin, lmax, want_pol, ncrossweights) !parallelized
+  call PseudoCl_GetCouplingMatrixArr(Coupler, MaskP, lmin, lmax, want_pol, ncrossweights, pol_weights) !parallelized
 
   StTime = GeteTime()  
   call PseudoCl_GetCouplingInversesArr(Coupler,ncrossweights)
-  if (mpiId==0) print *,'Coupling inversion time',  GeteTime()   - StTime
-
+  if (mpiId==0) then
+   print *,'Coupling inversion time',  GeteTime()   - StTime
+  end if
 ! if (cache_couple .and. FileExists(trim(data_dir)//trim(l_stem)//'.couple')) then
 !        if (MpiID ==0) then !if we are main thread
 !            print *,'Reading cached coupling matrix'
@@ -2489,6 +2904,49 @@ call HealpixFree(H)
   call TestPix(H,Mask,cls_file)
   call MpiStop('')
  end if
+
+ if (get_covariance .and.  (detector_noise_filename_format/='') ) then
+ 
+   if (MpiID==0) then
+     print *,'Getting matrices for covariance'
+    !Note we don't need all if nchanells >1 because noise is assumed uncorrelated between channels
+    !Note covariance is calculated for combined year maps
+    
+    ncovpower = CovPowers%nmaps*(CovPowers%nmaps +1)/2
+    print *,'ncovpower', ncovpower, nchannels, ncrossweights
+   
+    allocate(CovP(nCovPower,1))
+    call CrossPowersToHealpixPowerArray(CovPowers, CovP(:,1), dofree=.true.)
+    !if (pol_weights) then
+    ! call CrossPowersToHealpixPowerArray(CovPowers(2), CovP(:,2), dofree=.true.)
+    ! call CrossPowersToHealpixPowerArray(CovPowers(3), CovP(:,3), dofree=.true.)
+    !end if
+     !get all for simplicity, but not all entries are used (noise indep between channels)
+
+    allocate(XiMatrices(nCovPower))
+   else
+     XiMatrices => dummycoupler
+   end if
+   
+!   call PseudoCl_GetCouplingMatrixArr(XiMatrices,CovP, lmin, lmax, want_pol,ncovpower, .false.)
+! Now use only the T form
+    call PseudoCl_GetCouplingMatrixArr(XiMatrices,CovP, lmin, lmax, .false.,ncovpower, .false.)
+     !parallelized; no pol weights here as including all required variants explicitly in CovP array
+ 
+   if (MpiID==0) then   
+   !crashes??
+   ! print *,'freeing CovP'
+   ! call PseudoCl_FreePowerArray2(CovP)
+   ! print *,'deallocate'
+    deallocate(CovP)
+ 
+    print *,'Xi matrices ...',nCovPower, lmin,lmax
+    print *,  XiMatrices(1)%T(2,2), XiMatrices(1)%T(3,3), XiMatrices(1)%T(4,4)
+   end if
+   
+ end if
+ 
+ call MpiQuietWait !low CPU usage so can use openmp until MPI wanted
    
  call HealpixInit(H,nside, lmax,.true., w8dir=w8name,method=division_balanced) 
 
@@ -2501,8 +2959,13 @@ call HealpixFree(H)
          print *,'Get Chat Noise_l: '//trim(Channels(channel)%Name)
         
          allocate(Channels(channel)%NoiseP(ncrossweights))
-         call PseudoCl_GetCHatNoise(Channels(channel)%NoiseP, Coupler, WeightMaps, nweights, Channels(channel)%NoiseMap)
-        
+         if (pol_weights) then
+          call PseudoCl_GetCHatNoise(Channels(channel)%NoiseP, Coupler, &
+            WeightMaps,WeightMapsPol,nweights, Channels(channel)%NoiseMap,noise_colour_factor)
+         else
+          call PseudoCl_GetCHatNoise(Channels(channel)%NoiseP, Coupler, &
+            WeightMaps,WeightMaps,nweights, Channels(channel)%NoiseMap,noise_colour_factor)
+         end if
          do i=1,ncrossweights
            call TBeam_PowerSmooth(Channels(channel)%Beam,Channels(channel)%NoiseP(i),+1)
            call HealpixPower_Write(Channels(channel)%NoiseP(i), &
@@ -2514,19 +2977,34 @@ call HealpixFree(H)
        print *,'reading fiducial power'
        call HealpixPower_Nullify(PFid)
        call HealpixPower_ReadFromTextFile(PFid,fid_cls_file,lmax,pol=want_pol,dolens = .false.)
-
+       print *,'PFid...', PFid%cl(2:5,1)
        print *,'Getting covariance'
-    
-       call PseudoCl_GetFullCovariance(Coupler, XiMatrices, CovArr(1), PFid,vec_size, Channels, nweights, ENoiseFac, &
-             .true.,.true.,point_source_A_frac_error)
-       if (get_signal_covariance) then
+#ifdef MKLTHREADS
+       call mkl_set_num_threads(mkl_threads)
+#endif
+      !$ if (use_openmp) then
+      !$ call omp_set_num_threads(max_threads)
+      !$ print *, 'setting threads = ', max_threads 
+      !$ end if 
+
+      call PseudoCl_GetFullCovariance(Coupler, XiMatrices, CovArr(1), PFid,vec_size, Channels, nweights, ENoiseFac, &
+             .true.,.true.,point_source_A_frac_error, pol_weights,0,1)
+             
+      call PseudoCl_GetFullCovariance(Coupler, XiMatrices, CovArr(1), PFid,vec_size, Channels, nweights, ENoiseFac, &
+             .true.,.true.,point_source_A_frac_error, pol_weights,1,1)
+             
+       if (get_signal_covariance) then 
         call PseudoCl_GetFullCovariance(Coupler, XiMatrices, CovArr(2), PFid,vec_size, Channels, nweights, ENoiseFac, &
-            .false.,.true.,0.0)
+            .false.,.true.,0.0, pol_weights,1,1)
        end if
        if (get_noise_covariance) then
         call PseudoCl_GetFullCovariance(Coupler, XiMatrices, CovArr(3), PFid,vec_size, Channels, nweights, ENoiseFac, &
-            .true.,.false.,0.0)
+            .true.,.false.,0.0, pol_weights,1,1)
        end if
+
+      !$ if (use_openmp) then
+      !$ call omp_set_num_threads(1)
+      !$ end if 
 
        if (.not. get_sim .and. .not. get_analysis) then
              call TCouplingMatrix_ArrayFree(Coupler)
@@ -2536,6 +3014,7 @@ call HealpixFree(H)
        deallocate(XiMatrices)
    
        call HealpixPower_Init(SigNoiseCov,lmax, want_pol)
+       call HealpixPower_Init(OffDiagCov,lmax, want_pol)
        call HealpixPower_Init(PBinnedDiag,lmax, want_pol)
 
        if (get_signal_covariance) call HealpixPower_Init(SignalCov,lmax, want_pol)
@@ -2574,7 +3053,8 @@ call HealpixFree(H)
             PBinnedDiag%Cl(i,ix) =SigNoiseCov%Cl(i,ix)        
             end if
 
-          end do
+         end do
+          
         end do
         covstem = concat(trim(file_stem)//'_vec', vec_size,'_',cov_x,'_',cov_y)
         if (justsignal==2) covstem = trim(covstem)//'_signal'
@@ -2595,6 +3075,11 @@ call HealpixFree(H)
 
  !Take hybrid mixing only between same polarization spectra
        print *,'Getting hybrid coupling'
+      !$ if (use_openmp) then
+      !$ call omp_set_num_threads(max_threads)
+      !$ print *, 'setting threads = ', max_threads 
+      !$ end if 
+
        do polx=1, vec_size
        
             StTime = GeteTime()  
@@ -2688,7 +3173,7 @@ call HealpixFree(H)
 
        deallocate(ACovHybrid%C)
 
-        print *,'Time to finish pol', GeteTime() - StTime
+       print *,'Time to finish pol', GeteTime() - StTime
     
        call PseudoCl_CovmatArr1DWrite(HybridMix(polx),  concat(trim(data_dir)//trim(out_file_base)//'_hybridmat_pol' &
                    ,polx,'_chan',nchannels,'_w',nweights,'_lmax',lmax,'.dat'))
@@ -2746,6 +3231,10 @@ call HealpixFree(H)
        print *,'Time for hybrid covariance', getetime() - StTime
         
        end do
+      if (use_openmp) then
+      !$ call omp_set_num_threads(1)
+      end if 
+
 
        deallocate(tmp, tmpcov)
        
@@ -2759,7 +3248,7 @@ call HealpixFree(H)
        print *,'writing files'
         SigNoiseCov%Cl=0
         SignalCov%Cl=0 !pure signal variance
-        NoiseCov%Cl=0 !pure signal variance
+        NoiseCov%Cl=0 !pure noise variance
         do i=1,nl
         fac=1 !1e6*i*(i+1)/(2*3.1415)
         SigNoiseCov%Cl(i+lmin-1,C_T) = sqrt(fac*HyCov(1)%C(i,i))
@@ -2771,10 +3260,17 @@ call HealpixFree(H)
          PBinnedDiag%Cl(i+lmin-1,C_T) =SigNoiseCov%Cl(i,C_T)        
         end if
         if (vec_size>1) then  
-         SigNoiseCov%Cl(i+lmin-1,C_C) = &
-             sqrt(fac*HyCov(1)%C(nl+i,nl+i))
-         SigNoiseCov%Cl(i+lmin-1,C_E) = &
-            sqrt(fac*HyCov(1)%C(nl*2+i,nl*2+i))
+         SigNoiseCov%Cl(i+lmin-1,C_C) = sqrt(fac*HyCov(1)%C(nl+i,nl+i))
+         SigNoiseCov%Cl(i+lmin-1,C_E) = sqrt(fac*HyCov(1)%C(nl*2+i,nl*2+i))
+         OffDiagCov%Cl(i+lmin-1,C_T) = fac*HyCov(1)%C(i,nl+i)
+         OffDiagCov%Cl(i+lmin-1,C_C) = fac*HyCov(1)%C(i,nl*2+i)
+         OffDiagCov%Cl(i+lmin-1,C_E) = fac*HyCov(1)%C(nl+i,nl*2+i)
+         
+         if (get_signal_covariance) SignalCov%Cl(i+lmin-1,C_C) = sqrt(fac*HyCov(2)%C(nl+i,nl+i))
+         if (get_noise_covariance)  NoiseCov%Cl(i+lmin-1,C_C) = sqrt(fac*HyCov(3)%C(nl+i,nl+i))
+         if (get_signal_covariance) SignalCov%Cl(i+lmin-1,C_E) = sqrt(fac*HyCov(2)%C(nl*2+i,nl*2+i))
+         if (get_noise_covariance)  NoiseCov%Cl(i+lmin-1,C_E) = sqrt(fac*HyCov(3)%C(nl*2+i,nl*2+i))
+         
          if (i+lmin-1 >lmin+5 .and. i+lmin-1 < lmax -5) then
             PBinnedDiag%Cl(i+lmin-1,C_C) = sqrt(sum(fac*HyCov(1)%C(nl+i-5:nl+i+5,nl+i-5:nl+i+5))/11.)
             PBinnedDiag%Cl(i+lmin-1,C_E) = sqrt(sum(fac*HyCov(1)%C(2*nl+i-5:2*nl+i+5,2*nl+i-5:2*nl+i+5))/11.)
@@ -2785,6 +3281,7 @@ call HealpixFree(H)
          if (vec_size>3) then
           SigNoiseCov%Cl(i+lmin-1,C_B) = &
             sqrt(fac*HyCov(1)%C(nl*3+i,nl*3+i))
+          OffDiagCov%Cl(i+lmin-1,C_B) = fac*HyCov(1)%C(3*nl+i,nl*2+i)
           if (i+lmin-1 >lmin+5 .and. i+lmin-1 < lmax -5)  then
             PBinnedDiag%Cl(i+lmin-1,C_B) = sqrt(sum(fac*HyCov(1)%C(3*nl+i-5:3*nl+i+5,3*nl+i-5:3*nl+i+5))/11.)
             else
@@ -2798,6 +3295,9 @@ call HealpixFree(H)
         print *,'write file'
         call HealpixPower_Write(SigNoiseCov,trim(file_stem)//'_vec'//trim(IntToStr(vec_size))//'_'// &
                'joint_diagcov.dat')
+        call HealpixPower_Write(OffDiagCov,trim(file_stem)//'_vec'//trim(IntToStr(vec_size))//'_'// &
+               'joint_offdiagcov.dat')
+     
         if (get_signal_covariance) call HealpixPower_Write(SignalCov,trim(file_stem)//'_vec'//trim(IntToStr(vec_size))//'_'// &
                'joint_diagcov_signal.dat')
         if (get_noise_covariance) call HealpixPower_Write(NoiseCov,trim(file_stem)//'_vec'//trim(IntToStr(vec_size))//'_'// &
@@ -2817,8 +3317,9 @@ call HealpixFree(H)
        call CloseFile(file_unit)
       end if  
      
-      deallocate(HyCov(1)%C)          
+      if (.not. get_sim) deallocate(HyCov(1)%C)          
       if (get_signal_covariance) deallocate(HyCov(2)%C)          
+      if (get_noise_covariance) deallocate(HyCov(3)%C)          
      
       print *,'getting joint noise and point source transfers'
 
@@ -2887,16 +3388,14 @@ call HealpixFree(H)
        call HealpixPower_Write(fSkyEff,trim(file_stem)//'_vec'//trim(IntToStr(vec_size))//'_fSkyEff.dat')
       end if
   
-
-        print *,'have done covariance'
+      print *,'have done covariance'
         
-        if (.not. get_sim .and. .not. get_analysis) then
+      if (.not. get_sim .and. .not. get_analysis) then
          call HealpixFree(H)
          call MpiStop()
-        end if
+      end if
   else
     print *,'reading hybrid mix'
-    if (get_hybrid) then
      allocate(HybridMix(vec_size))
      do polx=1, vec_size
       call PseudoCl_CovmatArr1DRead(HybridMix(polx), &
@@ -2907,8 +3406,9 @@ call HealpixFree(H)
      call HealpixPower_ReadFromTextFile(HybridNoise, trim(file_stem)//'_hybrid_noise.dat',lmax, pol = want_pol)
      call HealpixPower_ReadFromTextFile(PointSourceP, trim(file_stem)//'_PointSources.dat',lmax, pol = want_pol)
      if (point_source_A == 0.d0) PointSourceP%Cl=0
-    end if  
   end if
+
+  call MpiWakeQuietWait !low CPU usage so can use openmp until MPI wanted
  
 !###########Analysis########### 
 
@@ -2940,14 +3440,15 @@ call HealpixFree(H)
    allocate(MapArray(nchannels))
    do channel = 1, nchannels
       call HealpixMap_Nullify(MapArray(channel))
-      call ProcessDatamap(H, Channels(channel), MapArray(Channel))
+      call ProcessChannelDatamap(H, Channels(channel), MapArray(Channel))
    end do
 
    print *,'Analysing maps'
    
    call AnalyseMap(H, MapArray, DataCl) 
    call HealpixPower_Write(DataCl,trim(anastem)//'_unsubtracted_data_cls.dat')
-   DataCl%Cl(:,C_T) = DataCl%Cl(:,C_T) - HybridNoise%Cl(:,C_T) - PointSourceP%Cl(:,C_T)
+   DataCl%Cl(:,C_T) = DataCl%Cl(:,C_T) - PointSourceP%Cl(:,C_T)
+   DataCl%Cl = DataCl%Cl - HybridNoise%Cl*noise_adjustment
    call HealpixPower_Write(DataCl,trim(anastem)//'_data_cls.dat')
            
    do channel = 1, nchannels
@@ -3007,6 +3508,8 @@ call HealpixFree(H)
    call HealpixPower_Init(CSkew,lmax, want_pol)
    call HealpixPower_Init(CAvgTemp,lmax, want_pol)
    call HealpixPower_Init(Cvar,lmax, want_pol)
+   call HealpixPower_Init(COffvar,lmax, want_pol)
+   
    if (sim_signal) call HealpixPower_Init(fSkyEff,lmax, want_pol)
   end if
 
@@ -3018,6 +3521,7 @@ call HealpixFree(H)
 
   allocate(simcov(nl*vec_size,nl*vec_size))
   allocate(bigvec(nl*vec_size))
+  
   cl_sample_unit = new_file_unit()
   call CreateTxtFile(trim(sim_stem)//'_cls_hybrid_samples.dat',cl_sample_unit)
   simcov=0 
@@ -3113,6 +3617,16 @@ call HealpixFree(H)
             CAvg%Cl = CAvg%Cl + HybridP%Cl
             CVar%Cl = Cvar%Cl + (HybridP%Cl - HybridNoise%Cl - PSim%Cl)**2
             CSkew%Cl = CSkew%Cl + (HybridP%Cl - HybridNoise%Cl - PSim%Cl)**3
+            COffVar%Cl(:,C_T) = COffVar%Cl(:,C_T) + (HybridP%Cl(:,C_T)-HybridNoise%Cl(:,C_T) - PSim%Cl(:,C_T))* &
+                                                   (HybridP%Cl(:,C_C)- PSim%Cl(:,C_C))
+            COffVar%Cl(:,C_C) = COffVar%Cl(:,C_C) + (HybridP%Cl(:,C_T)-HybridNoise%Cl(:,C_T)- PSim%Cl(:,C_T))* &
+                                (HybridP%Cl(:,C_E) - HybridNoise%Cl(:,C_E)-- PSim%Cl(:,C_E))
+            COffVar%Cl(:,C_E) = COffVar%Cl(:,C_E) + (HybridP%Cl(:,C_E)-HybridNoise%Cl(:,C_E)- PSim%Cl(:,C_E))* &
+                                    (HybridP%Cl(:,C_C) - PSim%Cl(:,C_C))
+            if (vec_size>3) then
+            COffVar%Cl(:,C_B) = COffVar%Cl(:,C_B) + (HybridP%Cl(:,C_E)-HybridNoise%Cl(:,C_E)- PSim%Cl(:,C_E))* &
+                          (HybridP%Cl(:,C_B)-HybridNoise%Cl(:,C_B)- PSim%Cl(:,C_B))
+            end if
                 
             if (.not. cross_spectra .and. sim_noise) &
              call HealpixPower_Write(HybridP,trim(sim_stem)//'_full_cls_hybrid_sim'//trim(IntToStr(sim_no))//'.dat')
@@ -3130,7 +3644,14 @@ call HealpixFree(H)
                 call HealpixPower_Write(CAvgTemp,trim(sim_stem)//'_cls_hybrid_avg.dat')
                 CAvgTemp%Cl =  sqrt(CVar%Cl/sim_no) 
                 call HealpixPower_Write(CAvgTemp,trim(sim_stem)//'_cls_hybrid_var.dat')
+                CAvgTemp%Cl =  COffVar%Cl/sim_no 
+                call HealpixPower_Write(CAvgTemp,trim(sim_stem)//'_cls_hybrid_offdiagvar.dat')
                 
+                if (get_covariance) then
+                 call SplineFitCl(CAvgTemp,SigNoiseCov) 
+                 call HealpixPower_Write(CAvgTemp,trim(sim_stem)//'_cls_hybrid_var_fit'//trim(intToStr(sim_no))//'.dat')
+                 call HealpixPower_Write(CAvgTemp,trim(sim_stem)//'_cls_hybrid_var_fit.dat')
+                end if
                 if (get_signal_covariance .and. get_noise_covariance .and. sim_signal .and. sim_noise) then
                     !One way to define degrees of freedom = fskyEff^2 (following WMAP parameterization for diagonal of covariance)
                     !Note point source variance is going into fsky
@@ -3149,6 +3670,61 @@ call HealpixFree(H)
         simcov = (mK**4/nsim)*simcov
         call  MatrixSym_Write_Binary_Single(concat(trim(data_dir)//trim(out_file_base)//'_sim',nsim,'_hybrid_pol', &
                   vec_size,'_lmax',lmax,'_',ncl_tot,'.covmat'),simcov)
+
+       if (get_covariance) then
+
+        HyCov(1)%C = HyCov(1)%C*mK**4
+        do i=1,nl*vec_size
+          bigvec(i) = simcov(i,i)/HyCov(1)%C(i,i)
+        end do
+        do i=1, vec_size
+        call SplineSmoothSampleArray(bigvec((i-1)*nl+1:), nl)
+        end do
+        
+!        do i = -smooth_w*2, smooth_w*2
+!         smooth_kernel(i) = exp(-i**2/real(2*smooth_w**2))
+!        end do 
+!        smooth_kernel= smooth_kernel/sum(smooth_kernel)
+!        
+!        allocate(BigVec2(nl))
+!        do j=1,vec_size
+!         bigVec2 = bigvec( (j-1)*nl+1:j*nl )         
+!         do i=1+smooth_w*2,nl-smooth_w*2
+!              bigvec((j-1)*nl+i) = sum(bigvec2(i-smooth_w*2:i+smooth_w*2)*smooth_kernel)
+!         end do
+!        end do
+        
+         
+        do i=1,nl*vec_size
+          HyCov(1)%C(:,i) = HyCov(1)%C(:,i)*sqrt(bigVec(i))
+          HyCov(1)%C(i,:) = HyCov(1)%C(i,:)*sqrt(bigVec(i))
+        end do
+!        deallocate(BigVec2)
+        
+        call  MatrixSym_Write_Binary_Single(concat( trim(data_dir)//trim(out_file_base)// &
+                        '_hybrid_pol',vec_size,'_lmax',lmax,'_',ncl_tot,'_simcalib.covmat'),HyCov(1)%C)
+
+        HyCov(1)%C = HyCov(1)%C/mK**4
+        SigNoiseCov%Cl=0 !pure signal variance
+        fac=1 
+        do i=1,nl
+        SigNoiseCov%Cl(i+lmin-1,C_T) = sqrt(fac*HyCov(1)%C(i,i))
+        if (vec_size>1) then  
+         SigNoiseCov%Cl(i+lmin-1,C_C) = &
+             sqrt(fac*HyCov(1)%C(nl+i,nl+i))
+         SigNoiseCov%Cl(i+lmin-1,C_E) = &
+            sqrt(fac*HyCov(1)%C(nl*2+i,nl*2+i))
+         if (vec_size>3) then
+          SigNoiseCov%Cl(i+lmin-1,C_B) = &
+            sqrt(fac*HyCov(1)%C(nl*3+i,nl*3+i))
+         end if
+        end if
+        end do
+        print *,'write calib rated diag cov'
+        call HealpixPower_Write(SigNoiseCov,trim(file_stem)//'_vec'//trim(IntToStr(vec_size))//'_'// &
+               'joint_diagcov_simcalib.dat')
+      
+       end if
 
 !        if (wmap_like_files .and. (get_signal_covariance .and. get_noise_covariance) &
 !                .and. sim_signal .and. sim_noise ) then
