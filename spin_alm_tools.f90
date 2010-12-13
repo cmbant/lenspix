@@ -2669,7 +2669,7 @@ contains
     integer lmin !, par_lm
     integer map_ix
 #ifdef MPIPIX
-    Type (HealpixMapArray), target :: dummymaps
+    Type (HealpixMapArray), pointer :: amap
     double precision Initime
 #endif
     !=======================================================================
@@ -2702,16 +2702,14 @@ contains
 
    do map_ix=1,nmaps
     if (H%MpiId==0) then
-    call MPI_SCATTERV(maps(map_ix)%M,H%North_Size, H%North_Start, &
+      amap => maps(map_ix)
+     else
+      amap => map2N(map_ix)
+     end if 
+    call MPI_SCATTERV(amap%M,H%North_Size, H%North_Start, &
        SP_MPI, map2N(map_ix)%M(H%North_Start(H%MpiId),1),H%North_Size(H%MpiId),SP_MPI, 0 ,MPI_COMM_WORLD, ierr)
-    call MPI_SCATTERV(maps(map_ix)%M,H%South_Size, H%South_Start, &
+    call MPI_SCATTERV(amap%M,H%South_Size, H%South_Start, &
        SP_MPI, map2S(map_ix)%M(H%South_Start(H%MpiId),1),H%South_Size(H%MpiId),SP_MPI, 0 ,MPI_COMM_WORLD, ierr)
-    else
-     call MPI_SCATTERV(0,H%North_Size, H%North_Start, &
-       SP_MPI, map2N(map_ix)%M(H%North_Start(H%MpiId),1),H%North_Size(H%MpiId),SP_MPI, 0 ,MPI_COMM_WORLD, ierr)
-     call MPI_SCATTERV(0,H%South_Size, H%South_Start, &
-       SP_MPI, map2S(map_ix)%M(H%South_Start(H%MpiId),1),H%South_Size(H%MpiId),SP_MPI, 0 ,MPI_COMM_WORLD, ierr)
-    end if
    end do
    if (H%MpiId==0 .and. dofree) then
        allocate(map2N(nmaps),map2S(nmaps))
@@ -3146,7 +3144,6 @@ contains
     
 #ifdef MPIPIX
     Type (HealpixMapArray), pointer :: amap
-    Type (HealpixMapArray), target :: dummymaps
     integer i
     double precision initime
 #endif
@@ -3180,14 +3177,14 @@ contains
      if (H%MpiId==0) then
       amap => maps(map_ix)
      else
-      amap => dummymaps
-     end if
-     do i=1,3
-      call mpi_scatterv(amap%M(:,i),h%north_size, h%north_start, &
-        sp_mpi, map2N(map_ix)%M(h%north_start(h%MpiId),i),h%north_size(h%MpiId),sp_mpi, 0 ,mpi_comm_world, ierr)
-      call mpi_scatterv(amap%M(:,i),h%south_size, h%south_start, &
-        sp_mpi, map2S(map_ix)%M(h%south_start(h%MpiId),i),h%south_size(h%MpiId),sp_mpi, 0 ,mpi_comm_world, ierr)
-     end do
+      amap => map2N(map_ix)
+     end if 
+         do i=1,3
+          call mpi_scatterv(amap%M(:,i),h%north_size, h%north_start, &
+            sp_mpi, map2N(map_ix)%M(h%north_start(h%MpiId),i),h%north_size(h%MpiId),sp_mpi, 0 ,mpi_comm_world, ierr)
+          call mpi_scatterv(amap%M(:,i),h%south_size, h%south_start, &
+            sp_mpi, map2S(map_ix)%M(h%south_start(h%MpiId),i),h%south_size(h%MpiId),sp_mpi, 0 ,mpi_comm_world, ierr)
+         end do
     end do
     if(debugmsgs>1) print *,code //' scattered ',h%MpiId, getetime() - starttime
    if (H%MpiId==0 .and. dofree) then

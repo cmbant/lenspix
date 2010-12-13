@@ -18,6 +18,7 @@ module PseudoCl
   character(LEN=16) :: Name
   character(LEN=256) :: noise_file
   integer :: Count
+  Type (TStringList) :: DetectorNames
   real(dp), pointer  :: sig0(:)  => NULL() 
   real(dp) :: Ghz
   real(dp) :: PtSrcA !non-beam-smoothed C_l of fiducial point sources

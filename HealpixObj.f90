@@ -1186,11 +1186,11 @@ contains
      call MpiStop('')
    endif
 
-   call HealpixMap_AllocateTQU(OutMap,OutMap%nmaps) 
+   call HealpixMap_AllocateTQU(OutMap,nmaps) 
    OutMap%HasPhi = .false.
    OutMap%spin = nospinmap
  
-   call input_map(fname, OutMAP%TQU, OutMap%npix, OutMap%nmaps, &
+   call input_map(fname, OutMAP%TQU, OutMap%npix, nmaps, &
        &   fmissval=fmissval, header= header_in)
 
 !!To do, boring...

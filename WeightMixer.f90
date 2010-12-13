@@ -81,7 +81,7 @@ module WeightMixing
  Type(HealPixMap), dimension(:), target, allocatable :: WeightMaps, WeightMapsPol, WeightMapsAll
  Type (TCouplingMatrix), dimension(:), pointer :: Coupler, XiMatrices
  Type(TCovMatSet), allocatable :: HybridMix(:)
- Type(HealpixMap) :: SmoothedNoise 
+ Type(HealpixMap), save :: SmoothedNoise 
 
 contains
 
@@ -183,8 +183,8 @@ contains
 
  function FormatFilename(FString, Channel, Detector, Year) result (formatted)
    character(LEN=*), intent(in) :: FString
-   character(LEN=*), intent(in), optional ::  Channel
-   integer, intent(in), optional :: Detector, Year
+   character(LEN=*), intent(in), optional ::  Channel, Detector   
+   integer, intent(in), optional :: Year
    character(LEN=1024) formatted
    
    formatted = FString
@@ -192,7 +192,9 @@ contains
    call StringReplace('%RES%',IntToStr(healpix_res), formatted)
    call StringReplace('%DVAR%',trim(data_var), formatted)
    if (present(Channel)) call StringReplace('%CHANNEL%',Channel,formatted)
-   if (present(Detector))  call StringReplace('%DA%',IntToStr(Detector),formatted)
+   if (present(Detector))  then
+    call StringReplace('%DA%',Trim(Detector),formatted)
+   end if
    if (present(Year))  call StringReplace('%YEAR%',IntToStr(Year),formatted)
    
  end function FormatFilename
@@ -221,7 +223,7 @@ contains
   allocate(C%DetectorBeams(C%Count))
   
   do i=1, C%Count
-   file = FormatFilename(beamfile,C%Name, i)
+   file = FormatFilename(beamfile,C%Name, DetectorName(C,i))
    C%DetectorBeams(i)%beam_transfer = .true.
    print *, 'reading beam file: '//trim(file)
    call TBeam_ReadFile(C%DetectorBeams(i),file,lmax)
@@ -338,15 +340,29 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
 
  end subroutine CrossPowersToHealpixPowerArray2
 
- subroutine ReadYearMaps(fname, M, DA, map_limit)
+ function DetectorName(C, i)
+  Type(TChannel), intent(in) :: C
+  integer, intent(in) :: i
+  character(LEN=48) DetectorName
+  
+   if (C%DetectorNames%Count>0) then
+     DetectorName=TStringList_Item(C%DetectorNames,i)
+   else
+     DetectorName=IntToStr(i)  
+   end if
+  
+  end function DetectorName 
+
+ subroutine ReadYearMaps(C,fname, M, DA, map_limit)
   character(LEN=*), intent(in):: fname
   character(LEN=256) :: aname
+  Type(TChannel), intent(in) :: C
   Type(HealpixMap) :: M(nyears)
   integer year, DA, limit
   integer, intent(in), optional :: map_limit
   
    do year = 1, nyears 
-    aname = FormatFilename(fname, '', DA, year)
+    aname =  FormatFilename(fname, '', DetectorName(C,DA), year)
     call HealpixMap_Nullify(M(year))
     if (present(map_limit)) then
      call HealpixMap_Read(M(year),aname, map_limit)
@@ -374,7 +390,8 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
 
        do year = 1, nyears 
        
-                aname = FormatFilename(year_filename_format, Channels(Channel)%Name, Detector, year)
+                aname = FormatFilename(year_filename_format, Channels(Channel)%Name, &
+                         DetectorName(Channels(Channel),Detector), year)
                 call HealpixMap_Nullify(M)
                 call HealPixMap_read(M, aname, pol_maps)
                 call HealpixMap_ForceRing(M)
@@ -387,6 +404,7 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
                        call MapMulPolWeight(M,WeightMaps(weight),WeightMapsPol(weight),WMaps(ix))
                       else
                        call HealpixMapMulCut(M,WeightMaps(weight),WMaps(ix), 1)
+                       print *,'mulcat',WMaps(ix)%nmaps, WeightMaps(weight)%nmaps
                   end if
 
                 end do
@@ -416,7 +434,8 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
 
        do year = 1, nyears+1 
        
-                aname = FormatFilename(year_filename_format, Channels(Channel)%Name, Detector, year)
+                aname = FormatFilename(year_filename_format, Channels(Channel)%Name, &
+                        DetectorName(Channels(Channel),Detector), year)
                 call HealpixMap_Nullify(yearMaps(year))
                 call HealPixMap_read(yearMaps(year), aname, pol_maps)
                 call HealpixMap_ForceRing(yearMaps(year))
@@ -627,7 +646,7 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
   real(dp) :: clWeight(0:lmax)
   integer njoint, jointix, jointix2, index, Pix, l
   
-  print *,'getting  CrossPCls'
+  print *,'getting CrossPCls'
   
   nmaps = TotYearWeightMaps()
   
@@ -783,7 +802,7 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
   do Detector=1, C%Count
 
     print *, 'Detector', Detector
-    call ReadYearMaps(fname, M, Detector, pol_maps)
+    call ReadYearMaps(C, fname, M, Detector, pol_maps)
     do year=1, nyears
           ix = ix+1
           call HealpixMap_Nullify(WMaps(ix))
@@ -863,7 +882,7 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
    print *,'Getting noise: '//trim(C%Name)
    do DA = 1, C%Count
    
-   call ReadYearMaps(fname, M, DA)
+   call ReadYearMaps(C,fname, M, DA)
   
    pixcount = 0
    missing=0
@@ -919,22 +938,23 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
   Type(TBeam) :: Beam
   !Assume second column is hit count
 
+
   do Detector = 1,C%Count
 
-  outname = FormatFilename(detector_filename_format, C%Name, Detector)
+  outname = FormatFilename(detector_filename_format, C%Name, DetectorName(C,Detector))
   if (.not. FileExists(outname)) then  
   print *,'Combining years '//trim(C%Name), Detector
   if (.not. noise_from_hitcounts) then
   
     if (nyears>1) call MpiStop('generalise combined maps')
-    aname = FormatFilename(year_filename_format, C%Name, Detector, Year)
-    call HealPixMap_read(Mtot, aname)
+    aname = FormatFilename(year_filename_format, C%Name, DetectorName(C,Detector), Year)
+    call HealPixMap_read(Mtot, aname, pol_maps)
     call HealpixMap_ForceRing(Mtot)
   
   else
   
   do year = 1, nyears
-   aname = FormatFilename(year_filename_format, C%Name, Detector, Year)
+   aname = FormatFilename(year_filename_format, C%Name, DetectorName(C,Detector), Year)
 
    print *,'reading '//trim(aname)
    if (year==1) then
@@ -981,7 +1001,7 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
      if (detector_filename_format=='') call MpiStop('No Data file')
      map_fname = FormatFilename(detector_filename_format, C%Name)
      if (C%Count==1 .and. FileExists(map_fname)) then 
-         call HealpixMap_Read(M,map_fname)
+         call HealpixMap_Read(M,map_fname, pol_maps)
      else
      cache_name = CacheName(map_fname, .true.)
      call StringReplace('%DA%','allDA_signal',cache_name)
@@ -995,8 +1015,8 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
             
               call HealpixMap_ForceRing(M)
               do i=1, C%Count   
-                 fname = FormatFilename(detector_filename_format, C%Name,i)
-                 call HealpixMap_Read(AMap, fname)
+                 fname = FormatFilename(detector_filename_format, C%Name,DetectorName(C,i))
+                 call HealpixMap_Read(AMap, fname, pol_maps)
 
                  call HealpixMap_ForceRing(AMap)
                  where (M%TQU /= fmissval .and. AMap%TQU /= fmissval) 
@@ -1106,13 +1126,13 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
          
          if (FileExists(cache_name) .and. .not. cross_spectra) then
                 print *,'reading cached noise map: '// trim(C%Name)
-                call HealpixMap_Read(NoiseMap,cache_name)
+                call HealpixMap_Read(NoiseMap,cache_name, pol_maps)
          else
               if (cross_spectra) then
                  allocate(C%DetectorYearNoiseMaps(C%Count,nyears))
               end if
               do i=1, C%Count   
-                 fname = FormatFilename(detector_noise_filename_format, C%Name, i) 
+                 fname = FormatFilename(detector_noise_filename_format, C%Name, DetectorName(C,i)) 
                  if (i==1) then
                    call GetNoiseMap(H, NoiseMap, fname, C%sig0(i))
                   else
@@ -1136,7 +1156,7 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
                    else
                     do year = 1, nyears
                      call HealpixMap_Nullify(C%DetectorYearNoiseMaps(i,year))
-                     fname = FormatFilename(year_noise_filename_format, C%Name, i, year)
+                     fname = FormatFilename(year_noise_filename_format, C%Name, DetectorName(C,i), year)
                      call GetNoiseMap(H, C%DetectorYearNoiseMaps(i,year), fname, C%sig0(i))
                     end do
                    end if
@@ -1210,7 +1230,6 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
      
           call HealpixMap_Nullify(NoiseMap)
           call HealpixMap_Read(NoiseMap, noise_map)
-     
           if (noise_from_hitcounts) then
              
             if (want_pol) call MpiStop('noise_from_hitcounts only TT at the mo')
@@ -1242,6 +1261,7 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
 
             call HealpixMap_Free(Hits)
          else
+          if (.not. want_pol) call HealpixMap_SetToIndexOnly(NoiseMap,1)
           print *,'scaling noise ',(map_scale/mK)**2
           where (NoiseMap%TQU/=fmissval)       
            NoiseMap%TQU = NoiseMap%TQU * (map_scale/mK)**2
@@ -2235,13 +2255,13 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
   
 end module WeightMixing
 
-    subroutine DoINit
-     use MPIstuff
-     integer i,ix
-     call mpi_init_thread(MPI_THREAD_FUNNELED,ix,i)  
-      print *,'mpi_init_thread',MPI_THREAD_FUNNELED,ix,i
+ !   subroutine DoINit
+ !    use MPIstuff
+ !    integer i,ix
+ !    call mpi_init_thread(MPI_THREAD_FUNNELED,ix,i)  
+ !     print *,'mpi_init_thread',MPI_THREAD_FUNNELED,ix,i
 
-    end subroutine DoINit
+  !  end subroutine DoINit
 
 
 program WeightMixer
@@ -2279,7 +2299,7 @@ program WeightMixer
  character(LEN=256)  :: NuMStr,cache_name,mask_fname
  character(LEN=256)  :: l_stem, cls_file, cls_unlensed_sim_file, cls_unlensed_sim_file_tensor, &
         fid_cls_file, out_file_base, out_file_root, sim_map_file, analysis_root, anastem
- character(LEN=256)  :: beamfile,sim_stem, covstem
+ character(LEN=256)  :: beamfile,sim_stem, covstem, detectorNames
  integer :: pol_vec_size, i, and_seed
  logical :: err, debug_files
  
@@ -2321,7 +2341,6 @@ program WeightMixer
  real(dp) :: noise_adjustment = 1.d0
  integer, parameter :: smooth_w = 2
  real :: smooth_kernel(-smooth_w*2:smooth_w*2)
-
   
  !$ integer, external :: omp_get_max_threads
 
@@ -2342,8 +2361,8 @@ program WeightMixer
 ! stop
 
 #ifdef MPIPIX
-! call mpi_init(i)
- call DoINit
+ call mpi_init(i)
+! call DoINit
 #endif
   call GetMpiStat(MpiID, MpiSize)
 
@@ -2493,6 +2512,11 @@ program WeightMixer
  do i = 1, nchannels
   Channels(i)%Name = Ini_Read_String_Array('channel_name',i)
   Channels(i)%Count = Ini_read_int_array('channel_count',i)
+  DetectorNames = Ini_Read_String_Array('channel_detector_names',i) 
+  call TStringList_Init(Channels(i)%DetectorNames) 
+  if (DetectorNames /='') then
+    call TStringList_SetFromString(Channels(i)%DetectorNames,DetectorNames)
+  end if
   Channels(i)%Ghz = Ini_read_Double_Array('channel_Ghz',i)
   allocate(Channels(i)%sig0(Channels(i)%Count))
   if (noise_from_hitcounts) then
