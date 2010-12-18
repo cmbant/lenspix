@@ -53,7 +53,6 @@ module WeightMixing
  real :: noise_colour_factor = 0.0 !assume noise goes like 1+ noise_colour_factor/(2l+1)
  
  integer :: zero_from_l = 0
-
  character(LEN=256) :: map_unit = 'muK'
  real(dp) :: map_scale = 1._dp !mutiply map to get muK
  logical :: get_mean_likes = .false.
@@ -62,6 +61,8 @@ module WeightMixing
  real(dp) :: noise_inv_fwhm = 0.d0
  real :: point_source_A = 0.d0
  real :: point_source_A_frac_error = 0.d0
+ logical :: unequal_times_only = .false.
+ logical :: subtract_monopole = .false.
  
  real(sp) :: noise
  character(LEN=256) :: file_stem
@@ -106,7 +107,7 @@ contains
   end subroutine MapMulPolWeight
 
 
- subroutine AnalyseMap(H, Maps, HybridP)
+ subroutine AnalyseMapAuto(H, Maps, HybridP)
   Type(HealpixInfo) :: H
   Type(HealpixMap) :: Maps(:)
   Type(HealpixPower) :: HybridP, CHat
@@ -178,7 +179,7 @@ contains
             end do
                 
             call HealpixCrossPowers_Free(PCls)
-   end subroutine AnalyseMap
+   end subroutine AnalyseMapAuto
 
 
  function FormatFilename(FString, Channel, Detector, Year) result (formatted)
@@ -379,6 +380,7 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
  integer detector, ix, weight, year, channel
  character(LEN=256) :: aname
  Type(HealpixMap) :: M
+ real mono
 
  print *,'Reading maps to get weighted map array'
   ix = 0
@@ -395,7 +397,19 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
                 call HealpixMap_Nullify(M)
                 call HealPixMap_read(M, aname, pol_maps)
                 call HealpixMap_ForceRing(M)
-                M%TQU = M%TQU*map_scale/mK
+
+                if (subtract_monopole) then               
+!!!!           
+                 mono=sum(dble(M%TQU(:,1)),mask=WeightMaps(1)%TQU(:,1)>0 .and. M%TQU(:,1)/=fmissval)/ &
+                                                   count(WeightMaps(1)%TQU(:,1)>0 .and. M%TQU(:,1)/=fmissval)
+                 where (M%TQU(:,1)/= fmissval)                                  
+                 M%TQU(:,1)=M%TQU(:,1) - mono
+                 end where
+                end if
+                           
+                where (M%TQU/= fmissval)                                  
+                 M%TQU = M%TQU*map_scale/mK
+                end where
                 
                 do weight = 1, nweights
                  ix = ix + 1
@@ -404,8 +418,8 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
                        call MapMulPolWeight(M,WeightMaps(weight),WeightMapsPol(weight),WMaps(ix))
                       else
                        call HealpixMapMulCut(M,WeightMaps(weight),WMaps(ix), 1)
-                       print *,'mulcat',WMaps(ix)%nmaps, WeightMaps(weight)%nmaps
                   end if
+!                    call HealpixVis_Map2ppmfile(WMaps(ix), 'outfiles/maskmap'//trim(IntToStr(ix))//'.ppm')
 
                 end do
                 call HealpixMap_Free(M)
@@ -477,6 +491,7 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
    integer channel, detector, year, nullmaps, ix, i
    logical, intent(in) :: nulltest
    Type(HealpixAlm) :: A, PtSrcA, SmoothA
+   integer maxp
    
    call HealpixAlm_Sim(A, P, HasPhi=.false., dopol = want_pol)
    if (point_source_A /= 0) then 
@@ -493,7 +508,12 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
      
      if (sim_signal) then
         call HealpixMap_Nullify(SignalMap)
-        call HealpixAlm_Assign(SmoothA, A)
+        if (want_pol .and. Channels(channel)%detector_has_pol(detector)) then
+         maxp=3
+        else
+         maxp=1
+        end if
+        call HealpixAlm_Assign(SmoothA, A,maxp )
         if (point_source_A /= 0) SmoothA%TEB(1,:,:) = SmoothA%TEB(1,:,:) +  &
                                     sqrt(Channels(channel)%PtSrcA) * PtSrcA%TEB(1,:,:) 
         call HealpixAlm_Smooth_beam(SmoothA,Channels(channel)%DetectorBeams(Detector)%Beam)
@@ -508,7 +528,7 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
        if (sim_signal) then
         call HealpixMap_Assign(YearMaps(Year), SignalMap)
        else
-        call HealpixMap_Init(YearMaps(Year), npix, pol = want_pol) 
+        call HealpixMap_Init(YearMaps(Year), npix, pol = want_pol .and. Channels(channel)%detector_has_pol(detector)) 
        end if
        if (sim_noise) call HealpixMap_AddUncorrelatedNoise(YearMaps(Year), &
                            Channels(channel)%DetectorYearNoiseMaps(detector,year))
@@ -533,7 +553,8 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
        if (sim_signal) then
         call HealpixMap_Assign(MapArray(ix), SignalMap)
        else
-        call HealpixMap_Init(MapArray(ix), npix, pol = want_pol) 
+        call HealpixMap_Init(MapArray(ix), npix, pol = &
+          want_pol .and. Channels(channel)%detector_has_pol(detector)) 
        end if
        if (sim_noise) call HealpixMap_AddUncorrelatedNoise(MapArray(ix), &
                            Channels(channel)%DetectorYearNoiseMaps(detector,year))
@@ -642,16 +663,17 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
   Type(HealpixCrossPowers) :: PCls
   Type(HealpixPower) :: CHat, TotCl(nchannels*nweights*(nchannels*nweights+1)/2)
   integer i, ix,ix2
-  real(dp), allocatable :: TotCount(:,:)
+  real(dp), allocatable :: TotCount(:,:,:)
   real(dp) :: clWeight(0:lmax)
   integer njoint, jointix, jointix2, index, Pix, l
-  
+  Type(HealpixAllCl), pointer :: ThisCross
+     
   print *,'getting CrossPCls'
   
   nmaps = TotYearWeightMaps()
   
   njoint = nchannels*nweights
-  allocate(TotCount(0:lmax,nchannels*nweights*(nchannels*nweights+1)/2))
+  allocate(TotCount(0:lmax,nchannels*nweights*(nchannels*nweights+1)/2,3))
   TotCount = 0
   do i = 1, njoint*(njoint+1)/2   
    call HealpixPower_Nullify(TotCl(i))
@@ -685,17 +707,19 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
                    !!! if (ix2>ix) cycle
                     !don't miss alternative TE estimator T year 1 E year 2 and T year 2 E year 1
                     !Can just double count all temperature estimators; bit inefficient
-                    if (channel==channel2 .and. year==year2 .and. detector==detector2) cycle 
+                    if (channel==channel2 .and. year==year2 .and. detector==detector2 .or. &
+                        unequal_times_only .and. year==year2) cycle 
 
  !Put all together as though from just channel and weight; don't attempt optimal detector weighting
                     jointix = (channel-1)*nweights + weight
                     jointix2 = (channel2-1)*nweights + weight2
                     index =    sym_ix(njoint,jointix,jointix2)
                     if (weight2 <= weight) then
-                     call PseudoCl_GetCHat(Coupler(sym_ix(nweights,weight,weight2)),PCls%Ps(ix,ix2), Chat)
+                     ThisCross => PCls%Ps(ix,ix2)
                     else
-                     call PseudoCl_GetCHat(Coupler(sym_ix(nweights,weight,weight2)),PCls%Ps(ix2,ix), Chat)
-                    end if
+                     ThisCross => PCls%Ps(ix2,ix)                    
+                    end if 
+                    call PseudoCl_GetCHat(Coupler(sym_ix(nweights,weight,weight2)),ThisCross, Chat)
                     
                     call TBeam_PowerSmooth2(Channels(channel)%DetectorBeams(Detector),&
                         Channels(channel2)%DetectorBeams(Detector2),CHat,+1)
@@ -704,9 +728,22 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
                                           Channels(channel2)%DetectorBeams(Detector2)%Beam   &
                                         / ( Channels(channel)%sig0(Detector) * Channels(channel2)%sig0(Detector2)))**2
                        do l=2,lmax
-                        TotCl(index)%Cl(l,:) = TotCl(index)%Cl(l,:) + Chat%Cl(l,:)*ClWeight(l)
+                        TotCl(index)%Cl(l,C_T) = TotCl(index)%Cl(l,C_T) + Chat%Cl(l,C_T)*ClWeight(l)
                        end do
-                       TotCount(:,index) = TotCount(:,index) + ClWeight
+                       TotCount(:,index,1) = TotCount(:,index,1) + ClWeight
+                       if (size(ThisCross%Cl,2)>1) then
+                        do l=2,lmax
+                         TotCl(index)%Cl(l,C_C) = TotCl(index)%Cl(l,C_C) + Chat%Cl(l,C_C)*ClWeight(l)
+                        end do
+                        TotCount(:,index,2) = TotCount(:,index,2) + ClWeight
+                       end if
+                       if (size(ThisCross%Cl,2)+size(ThisCross%Cl,3)==9) then
+                        do l=2,lmax
+                         TotCl(index)%Cl(l,C_E:C_B) = TotCl(index)%Cl(l,C_E:C_B) + Chat%Cl(l,C_E:C_B)*ClWeight(l)
+                        end do
+                        TotCount(:,index,3) = TotCount(:,index,3) + ClWeight
+                       end if
+
                     end do
                 end do
                 end do
@@ -738,8 +775,14 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
            if (jointix2 > jointix) cycle
            Pix = Pix + 1      
            do l=2,lmax
-            if (TotCount(l,Pix)/=0) then
-             TotCl(Pix)%Cl(l,:) = TotCl(Pix)%Cl(l,:)/TotCount(l,Pix)
+            if (TotCount(l,Pix,1)/=0) then
+             TotCl(Pix)%Cl(l,C_T) = TotCl(Pix)%Cl(l,C_T)/TotCount(l,Pix,1)
+            end if
+            if (TotCount(l,Pix,2)/=0) then
+             TotCl(Pix)%Cl(l,C_C) = TotCl(Pix)%Cl(l,C_C)/TotCount(l,Pix,2)
+            end if
+            if (TotCount(l,Pix,3)/=0) then
+             TotCl(Pix)%Cl(l,C_E:C_B) = TotCl(Pix)%Cl(l,C_E:C_B)/TotCount(l,Pix,3)
             end if
            end do
            if (dowrite) call HealpixPower_Write(TotCl(Pix),concat(trim(file_stem)//'_vec',vec_size,'_c',channel,'_w',weight, &
@@ -991,7 +1034,7 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
   Type(HealpixMap) ::  M
   Type(HealpixMap) :: AMap
   character(LEN=1024) :: cache_name, map_fname, fname   
-  integer i
+  integer i, polcount
  
   Type (HealpixAlm) :: A
   Type(HealpixPOwer) :: Chat 
@@ -1014,20 +1057,36 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
               call healpixMap_Init(M, npix, pol = want_pol)
             
               call HealpixMap_ForceRing(M)
+              polcount=0
               do i=1, C%Count   
                  fname = FormatFilename(detector_filename_format, C%Name,DetectorName(C,i))
                  call HealpixMap_Read(AMap, fname, pol_maps)
 
                  call HealpixMap_ForceRing(AMap)
-                 where (M%TQU /= fmissval .and. AMap%TQU /= fmissval) 
-                  M%TQU = M%TQU + AMap%TQU
+                 where (M%TQU(:,1) /= fmissval .and. AMap%TQU(:,1) /= fmissval) 
+                  M%TQU(:,1) = M%TQU(:,1) + AMap%TQU(:,1)
                  elsewhere
-                  M%TQU = fmissval
+                  M%TQU(:,1) = fmissval
                  end where
+
+                 if (want_pol .and. C%detector_has_pol(i)) then
+                  polcount=polcount+1
+                  where (M%TQU(:,2:3) /= fmissval .and. AMap%TQU(:,2:3) /= fmissval) 
+                   M%TQU(:,2:3) = M%TQU(:,2:3) + AMap%TQU(:,2:3)
+                  elsewhere
+                   M%TQU(:,2:3) = fmissval
+                  end where
+                 end if
+                 
               end do
-               where (M%TQU /= fmissval)
-                M%TQU = M%TQU /C%Count 
+               where (M%TQU(:,1) /= fmissval)
+                M%TQU(:,1) = M%TQU(:,1) /C%Count 
                end where
+               if (want_pol) then
+                where (M%TQU(:,2:3) /= fmissval)
+                 M%TQU(:,2:3) = M%TQU(:,2:3) /PolCount
+                end where               
+               end if
                call HealpixMap_Free(AMap)
                print *,'writing '//trim(cache_name)
                call HealpixMap_Write(M,cache_name)
@@ -1110,7 +1169,7 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
   Type(HealpixMap) :: AMap
   character(LEN=1024) :: cache_name, noise_fname, fname   
   integer minnoise
-  integer i, year
+  integer i, year,npol, polcount
       
         print *, 'ProcessNoiseMaps'
         NoiseMap =>  C%NoiseMap
@@ -1131,28 +1190,30 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
               if (cross_spectra) then
                  allocate(C%DetectorYearNoiseMaps(C%Count,nyears))
               end if
+              polcount=0  
               do i=1, C%Count   
                  fname = FormatFilename(detector_noise_filename_format, C%Name, DetectorName(C,i)) 
+                 call GetNoiseMap(H, AMap, fname, C%sig0(i))
+                 call HealpixMap_ForceRing(AMap)
                  if (i==1) then
-                   call GetNoiseMap(H, NoiseMap, fname, C%sig0(i))
-                  else
-                   call GetNoiseMap(H, AMap, fname, C%sig0(i))
-                   where (NoiseMap%TQU /= fmissval .and. AMap%TQU /= fmissval)
-                    NoiseMap%TQU =  NoiseMap%TQU + AMap%TQU
+                   call HealpixMap_Init(NoiseMap, AMap%npix, pol_maps)
+                 end if
+                 npol=1
+                 if (want_pol .and. C%detector_has_pol(i) ) then
+                   npol=3
+                   polcount=polcount+1
+                 end if
+                 where (NoiseMap%TQU(:,1:npol) /= fmissval .and. AMap%TQU(:,1:npol) /= fmissval)
+                     NoiseMap%TQU(:,1:npol) =  NoiseMap%TQU(:,1:npol) + AMap%TQU(:,1:npol)
                    elsewhere 
-                    NoiseMap%TQU = fmissval 
-                   end where
-                  end if
-
+                     NoiseMap%TQU(:,1:npol) = fmissval 
+                 end where
+      
                   if (cross_spectra) then
                    if (nyears==1) then
                      call HealpixMap_Nullify(C%DetectorYearNoiseMaps(i,1))
                      print *,'assigning 1 year'
-                     if (i==1) then
-                      call HealpixMap_Assign(C%DetectorYearNoiseMaps(i,1),NoiseMap)
-                     else
-                      call HealpixMap_Assign(C%DetectorYearNoiseMaps(i,1),AMap)
-                     end if
+                     call HealpixMap_Assign(C%DetectorYearNoiseMaps(i,1),AMap)
                    else
                     do year = 1, nyears
                      call HealpixMap_Nullify(C%DetectorYearNoiseMaps(i,year))
@@ -1163,11 +1224,16 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
                   end if
               end do
 
-               where (NoiseMap%TQU /= fmissval)
-               NoiseMap%TQU = NoiseMap%TQU/C%Count**2
+               where (NoiseMap%TQU(:,1) /= fmissval)
+               NoiseMap%TQU(:,1) = NoiseMap%TQU(:,1)/C%Count**2
                end where
+               if (want_pol) then
+                where (NoiseMap%TQU(:,2:3) /= fmissval)
+                 NoiseMap%TQU(:,2:3) = NoiseMap%TQU(:,2:3)/polcount**2
+                end where
+               end if
+               
                call HealpixMap_Free(AMap)
-               call HealpixMap_ForceRing(NoiseMap)
                
                if (.not. cross_spectra) then
                 print *,'writing '//trim(cache_name)
@@ -1183,8 +1249,10 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
            print *,trim(C%Name)//' min/max Pol noise = ', &
             minval(NoiseMap%TQU(:,2:3), mask = NoiseMap%TQU(:,2:3) /= fmissval), &
              maxval(NoiseMap%TQU(:,2:3), mask = NoiseMap%TQU(:,2:3)/= fmissval)    
-           ENoiseFac = sum(dble(NoiseMap%TQU(:,2)+NoiseMap%TQU(:,3))/dble(NoiseMap%TQU(:,1)), &
-                    mask = NoiseMap%TQU(:,2)/= fmissval )/(2* count(NoiseMap%TQU(:,2)/= fmissval)) 
+           C%ENoiseFac = sum(dble(NoiseMap%TQU(:,2)+NoiseMap%TQU(:,3))/dble(NoiseMap%TQU(:,1)), &
+                    mask = NoiseMap%TQU(:,2)/= fmissval .and. NoiseMap%TQU(:,1)/= fmissval )/ &
+                         (2* count(NoiseMap%TQU(:,2)/= fmissval .and. NoiseMap%TQU(:,1)/= fmissval)) 
+           ENoiseFac = C%ENoiseFac            
            print *, 'Empirical ENoiseFac = ', ENoiseFac             
 
          end if
@@ -2299,7 +2367,7 @@ program WeightMixer
  character(LEN=256)  :: NuMStr,cache_name,mask_fname
  character(LEN=256)  :: l_stem, cls_file, cls_unlensed_sim_file, cls_unlensed_sim_file_tensor, &
         fid_cls_file, out_file_base, out_file_root, sim_map_file, analysis_root, anastem
- character(LEN=256)  :: beamfile,sim_stem, covstem, detectorNames
+ character(LEN=256)  :: beamfile,sim_stem, covstem, detectorNames, detectorPols
  integer :: pol_vec_size, i, and_seed
  logical :: err, debug_files
  
@@ -2517,6 +2585,13 @@ program WeightMixer
   if (DetectorNames /='') then
     call TStringList_SetFromString(Channels(i)%DetectorNames,DetectorNames)
   end if
+  allocate(Channels(i)%detector_has_pol(Channels(i)%Count))
+  detectorPols= Ini_Read_String_Array('channel_detector_polarized',i) 
+  if (want_pol .and. detectorPols/='') then
+   read(detectorPols,*) Channels(i)%detector_has_pol
+  else
+   Channels(i)%detector_has_pol = want_pol
+  end if  
   Channels(i)%Ghz = Ini_read_Double_Array('channel_Ghz',i)
   allocate(Channels(i)%sig0(Channels(i)%Count))
   if (noise_from_hitcounts) then
@@ -2558,7 +2633,10 @@ program WeightMixer
  end if
  
  cross_spectra = Ini_Read_Logical('cross_spectra')
- 
+ if (cross_Spectra) then
+  unequal_times_only = Ini_Read_Logical('unequal_times_only',.false.)
+  if (MpiID==0) print *,'doing only cross-spectra from different time periods'
+ end if
  w8name = Ini_Read_String('w8dir')
  no_pix_window = Ini_read_Logical('no_pix_window', .false.)
  
@@ -2577,9 +2655,9 @@ program WeightMixer
  check_cls_file1 = Ini_read_String('check_cls_file1')
  check_cls_file2 = Ini_read_String('check_cls_file2')
  
- fits_mask = trim(input_data_dir)//Ini_read_String('unapodized_mask')
+ fits_mask = trim(input_data_dir)//trim(Ini_read_String('unapodized_mask'))
  if (want_pol) then
-  fits_mask_pol = trim(input_data_dir)//Ini_read_String('unapodized_mask_pol')
+  fits_mask_pol = trim(input_data_dir)//trim(Ini_read_String('unapodized_mask_pol'))
   pol_weights = fits_mask /= fits_mask_pol
  end if
  
@@ -2587,6 +2665,8 @@ program WeightMixer
  processing_mask_badpix = Ini_read_Logical('processing_mask_badpix', .false.)
  if (.not. processing_mask_badpix .and. processing_mask/='') &
   processing_mask_map = Ini_read_Int('processing_mask_map',1)
+  
+ subtract_monopole = Ini_Read_Logical('subtract_monopole',.false.)
  
  noise_map_for_window = Ini_Read_String('noise_map_for_window')
  if (noise_map_for_window /='') noise_map_for_window = trim(input_data_dir)//trim(noise_map_for_window )
@@ -3011,18 +3091,18 @@ call HealpixFree(H)
       !$ print *, 'setting threads = ', max_threads 
       !$ end if 
 
-      call PseudoCl_GetFullCovariance(Coupler, XiMatrices, CovArr(1), PFid,vec_size, Channels, nweights, ENoiseFac, &
+      call PseudoCl_GetFullCovariance(Coupler, XiMatrices, CovArr(1), PFid,vec_size, Channels, nweights,  &
              .true.,.true.,point_source_A_frac_error, pol_weights,0,1)
              
-      call PseudoCl_GetFullCovariance(Coupler, XiMatrices, CovArr(1), PFid,vec_size, Channels, nweights, ENoiseFac, &
+      call PseudoCl_GetFullCovariance(Coupler, XiMatrices, CovArr(1), PFid,vec_size, Channels, nweights,  &
              .true.,.true.,point_source_A_frac_error, pol_weights,1,1)
              
        if (get_signal_covariance) then 
-        call PseudoCl_GetFullCovariance(Coupler, XiMatrices, CovArr(2), PFid,vec_size, Channels, nweights, ENoiseFac, &
+        call PseudoCl_GetFullCovariance(Coupler, XiMatrices, CovArr(2), PFid,vec_size, Channels, nweights,  &
             .false.,.true.,0.0, pol_weights,1,1)
        end if
        if (get_noise_covariance) then
-        call PseudoCl_GetFullCovariance(Coupler, XiMatrices, CovArr(3), PFid,vec_size, Channels, nweights, ENoiseFac, &
+        call PseudoCl_GetFullCovariance(Coupler, XiMatrices, CovArr(3), PFid,vec_size, Channels, nweights,  &
             .true.,.false.,0.0, pol_weights,1,1)
        end if
 
@@ -3469,7 +3549,7 @@ call HealpixFree(H)
 
    print *,'Analysing maps'
    
-   call AnalyseMap(H, MapArray, DataCl) 
+   call AnalyseMapAuto(H, MapArray, DataCl) 
    call HealpixPower_Write(DataCl,trim(anastem)//'_unsubtracted_data_cls.dat')
    DataCl%Cl(:,C_T) = DataCl%Cl(:,C_T) - PointSourceP%Cl(:,C_T)
    DataCl%Cl = DataCl%Cl - HybridNoise%Cl*noise_adjustment
@@ -3615,7 +3695,7 @@ call HealpixFree(H)
             end if
             
             StTime = GeteTime()     
-            call AnalyseMap(H, MapArray, HybridP) 
+            call AnalyseMapAuto(H, MapArray, HybridP) 
             HybridP%Cl(:,1) = HybridP%Cl(:,1) - PointSourceP%Cl(:,1) 
             do channel=1, nchannels
               call HealpixMap_Free(MapArray(channel)) 
@@ -3623,7 +3703,7 @@ call HealpixFree(H)
 
         end if
  
-            print *,'AnalyseMap time:',  GeteTime() -StTime
+            print *,'AnalyseMapAuto time:',  GeteTime() -StTime
 
             bigvec(1:nl) = (HybridP%Cl(lmin:lmax,C_T) - HybridNoise%Cl(lmin:lmax,C_T) - PSim%Cl(lmin:lmax,C_T))
             if (vec_size>=3) then
@@ -3644,7 +3724,7 @@ call HealpixFree(H)
             COffVar%Cl(:,C_T) = COffVar%Cl(:,C_T) + (HybridP%Cl(:,C_T)-HybridNoise%Cl(:,C_T) - PSim%Cl(:,C_T))* &
                                                    (HybridP%Cl(:,C_C)- PSim%Cl(:,C_C))
             COffVar%Cl(:,C_C) = COffVar%Cl(:,C_C) + (HybridP%Cl(:,C_T)-HybridNoise%Cl(:,C_T)- PSim%Cl(:,C_T))* &
-                                (HybridP%Cl(:,C_E) - HybridNoise%Cl(:,C_E)-- PSim%Cl(:,C_E))
+                                (HybridP%Cl(:,C_E) - HybridNoise%Cl(:,C_E)- PSim%Cl(:,C_E))
             COffVar%Cl(:,C_E) = COffVar%Cl(:,C_E) + (HybridP%Cl(:,C_E)-HybridNoise%Cl(:,C_E)- PSim%Cl(:,C_E))* &
                                     (HybridP%Cl(:,C_C) - PSim%Cl(:,C_C))
             if (vec_size>3) then

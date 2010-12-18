@@ -1,6 +1,6 @@
 !Functions for calculating coupling matrices and covariances, etc.
 !Desgined for use on a cluster 2+ CPUs using MPI, not so well tested on single CPU
-!This version AL: April 2008
+!This version AL: April 2008 - Dec 2010
 module PseudoCl
  use healpix_types, ONLY: SP,DP,I4B,SPC
  use HealpixObj
@@ -17,11 +17,13 @@ module PseudoCl
  Type TChannel
   character(LEN=16) :: Name
   character(LEN=256) :: noise_file
-  integer :: Count
+  integer :: Count  !Number of detectors
   Type (TStringList) :: DetectorNames
+  logical, pointer :: detector_has_pol(:) => NULL() !true if TQU, false if just T
   real(dp), pointer  :: sig0(:)  => NULL() 
   real(dp) :: Ghz
   real(dp) :: PtSrcA !non-beam-smoothed C_l of fiducial point sources
+  real(dp) :: ENoiseFac
   Type(TBeam), pointer :: DetectorBeams(:)  => NULL() 
   Type(HealpixMap), pointer :: DetectorYearNoiseMaps(:,:) => NULL() 
   Type(TBeam) :: Beam 
@@ -663,26 +665,32 @@ subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl
      Stop 'PseudoCl_GetCHat: need inverses'
     end if
    
-   call HealpixPower_Init(Phat,M%lmax, M%has_pol)
+   call HealpixPower_Init(Phat,M%lmax, M%has_pol .and. size(PCls%Cl,2)+size(PCls%Cl,3)>2)
    tmp1=PCls%Cl(M%lmin:M%lmax,1,1)
    call Matrix_MulVec(M%InvT,tmp1,tmp2)
    Phat%Cl(M%lmin:M%lmax,C_T) = tmp2
    
    if (M%has_pol) then
-    tmp1=PCls%Cl(M%lmin:M%lmax,2,1)  
-    call Matrix_MulVec(M%InvX,tmp1,tmp2)
-    Phat%Cl(M%lmin:M%lmax,C_C)=tmp2
-    tmp1 = PCls%Cl(M%lmin:M%lmax,2,2)
-    tmpB = PCls%Cl(M%lmin:M%lmax,3,3)
-    call Matrix_MulVec(M%InvEE,tmp1,tmp2)
-    call Matrix_MulVec(M%InvEB,tmpB,tmp2,1._dm,1._dm)
-    Phat%Cl(M%lmin:M%lmax,C_E)=tmp2
- 
-    call Matrix_MulVec(M%InvEE,tmpB,tmp2)
-    call Matrix_MulVec(M%InvEB,tmp1,tmp2,1._dm,1._dm)
-    Phat%Cl(M%lmin:M%lmax,C_B)=tmp2
-   end if
    
+    if (size(PCls%Cl,2)>1) then
+     tmp1=PCls%Cl(M%lmin:M%lmax,2,1)  
+     call Matrix_MulVec(M%InvX,tmp1,tmp2)
+     Phat%Cl(M%lmin:M%lmax,C_C)=tmp2
+     if (size(PCls%Cl,3)>1) then
+    
+        tmp1 = PCls%Cl(M%lmin:M%lmax,2,2)
+        tmpB = PCls%Cl(M%lmin:M%lmax,3,3)
+        call Matrix_MulVec(M%InvEE,tmp1,tmp2)
+        call Matrix_MulVec(M%InvEB,tmpB,tmp2,1._dm,1._dm)
+        Phat%Cl(M%lmin:M%lmax,C_E)=tmp2
+     
+        call Matrix_MulVec(M%InvEE,tmpB,tmp2)
+        call Matrix_MulVec(M%InvEB,tmp1,tmp2,1._dm,1._dm)
+        Phat%Cl(M%lmin:M%lmax,C_B)=tmp2
+     end if
+   end if
+   end if
+    
   end subroutine PseudoCl_GetCHat 
 
   subroutine PseudoCl_GetSimpleCovariance(M, Cov, PFid, vec_size, NoiseP, fwhm)
@@ -880,7 +888,7 @@ subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl
    
   end function sym_ix_check
   
-  subroutine PseudoCl_GetFullCovariance(Coupler, Xi, CArr, PFid, vec_size,  Channels, nweights, ENoiseFac, &
+  subroutine PseudoCl_GetFullCovariance(Coupler, Xi, CArr, PFid, vec_size,  Channels, nweights, &
          incnoise,incsignal, frac_pt_src_error, pol_weights, step, nstep)
   !General result
   !At l>30 seems to be very accurate to use just Xi%T rather than Xi%E (and consistent at this approx anyway)
@@ -898,7 +906,7 @@ subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl
     Type(TCovMat), pointer :: C, EE, EB, BE, BB
     integer, intent(in) :: vec_size
     integer, intent(in) :: nweights
-    real(dp), intent(in) ::  ENoiseFac
+    real(dp) ::  ENoiseFac_11,ENoiseFac_22, ENoiseFac_12,ENoiseFac_21,ENoiseFac2
     integer aix,nl, ncl_tot, ncl, l, j, status
     real fac, crossNoiseFac
     real, dimension(:,:), allocatable :: rootT, rootE, rootB
@@ -1082,8 +1090,9 @@ subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl
                  real(SmoothedP(chanx2)%Cl(:,C_E),dp)*SmoothedP(chany2)%Cl(:,C_E) ) ** 0.25_dp
       AvP%Cl(:,C_B) = (real(SmoothedP(chanx)%Cl(:,C_B),dp)*SmoothedP(chany)%Cl(:,C_B)* &
                  real(SmoothedP(chanx2)%Cl(:,C_B),dp)*SmoothedP(chany2)%Cl(:,C_B) ) ** 0.25_dp
+      where (PFid%Cl(:,C_T)>0)
       AvP%Cl(:,C_C)= PFid%Cl(:,C_C)* AvP%Cl(:,C_T)/PFid%Cl(:,C_T)
-      
+      end where
       
       rootE_11 = sqrt(rootE(:,chanx)*rootE(:,chanx2))
       rootE_12 = sqrt(rootE(:,chanx)*rootE(:,chany2))
@@ -1169,6 +1178,13 @@ subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl
            n_12_n_21 = sym_ix_check(chk,nvarmaps, ix_12+ncl*chanx, ix_21+ncl*chany)
            PP_n_12_n_21 = sym_ix_check(chk,nvarmaps, ix_12+ncl*chanx+nmaskmaps, ix_21+ncl*chany+nmaskmaps)       
         end if
+        
+        ENoiseFac_11=sqrt(Channels(chanx)%ENoiseFac*Channels(chanx2)%ENoiseFac)
+        ENoiseFac_22=sqrt(Channels(chany)%ENoiseFac*Channels(chany2)%ENoiseFac)
+        ENoiseFac_21=sqrt(Channels(chany)%ENoiseFac*Channels(chanx2)%ENoiseFac)
+        ENoiseFac_12=sqrt(Channels(chanx)%ENoiseFac*Channels(chany2)%ENoiseFac)
+        ENoiseFac2=ENoiseFac_11*ENoiseFac_22
+        
       !assume pol has larger noise than T, so always use pol in order of weights e.g. X = E_2 T_1 not T_2 E_1
        
        if (step==0) cycle
@@ -1230,9 +1246,10 @@ subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl
              if (MM_s_12_s_21/=0) C%C(lmin:lmax,l) = C%C(lmin:lmax,l)&
               +  AvP%Cl(l,C_C)* AvP%Cl(lmin:lmax,C_C)*Xi(MM_s_12_s_21)%T(:,l) 
              if (incnoise) then
-             if (PT_n_11_n_22/=0)  C%C(lmin:lmax,l)= C%C(lmin:lmax,l) + crossNoiseFac*ENoiseFac*Xi(PT_n_11_n_22)%T(:,l) 
+             if (PT_n_11_n_22/=0)  C%C(lmin:lmax,l)= C%C(lmin:lmax,l) + &
+                crossNoiseFac*ENoiseFac_11*Xi(PT_n_11_n_22)%T(:,l) 
              if (PT_n_11_s_22/=0)  C%C(lmin:lmax,l)= C%C(lmin:lmax,l) + & 
-                             NoiseScale*ENoiseFac*rootT_22(l)*rootT_22(lmin:lmax) * Xi(PT_n_11_s_22)%T(:,l) 
+                 NoiseScale*ENoiseFac_11*rootT_22(l)*rootT_22(lmin:lmax) * Xi(PT_n_11_s_22)%T(:,l) 
              if (PT_s_11_n_22/=0)  C%C(lmin:lmax,l)= C%C(lmin:lmax,l) + &                  
                              NoiseScale*rootE_11(l)*rootE_11(lmin:lmax) * Xi(PT_s_11_n_22)%T(:,l) 
             end if
@@ -1249,16 +1266,16 @@ subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl
               if (PP_s_12_s_21/=0) C%C(lmin:lmax,l) = C%C(lmin:lmax,l) + &
                    AvP%Cl(l,C_E)*(Xi(PP_s_12_s_21)%T(:,l))*AvP%Cl(lmin:lmax,C_E) 
               if (incnoise) then
-               if (PP_n_11_n_22/=0) C%C(lmin:lmax,l)=C%C(lmin:lmax,l) + crossNoiseFac*EnoiseFac**2*Xi(PP_n_11_n_22)%T(:,l)
-               if (PP_n_12_n_21/=0) C%C(lmin:lmax,l)=C%C(lmin:lmax,l) + crossNoiseFac*EnoiseFac**2*Xi(PP_n_12_n_21)%T(:,l)
+               if (PP_n_11_n_22/=0) C%C(lmin:lmax,l)=C%C(lmin:lmax,l) + crossNoiseFac*EnoiseFac2*Xi(PP_n_11_n_22)%T(:,l)
+               if (PP_n_12_n_21/=0) C%C(lmin:lmax,l)=C%C(lmin:lmax,l) + crossNoiseFac*EnoiseFac2*Xi(PP_n_12_n_21)%T(:,l)
                if (PP_n_11_s_22/=0) C%C(lmin:lmax,l)=C%C(lmin:lmax,l) + &
-                  NoiseScale*ENoiseFac*rootE_22(l)*rootE_22(lmin:lmax)*Xi(PP_n_11_s_22)%T(:,l) 
+                  NoiseScale*ENoiseFac_11*rootE_22(l)*rootE_22(lmin:lmax)*Xi(PP_n_11_s_22)%T(:,l) 
                if (PP_n_12_s_21/=0) C%C(lmin:lmax,l)=C%C(lmin:lmax,l) + &
-                  NoiseScale*ENoiseFac*rootE_21(l)*rootE_21(lmin:lmax)*Xi(PP_n_12_s_21)%T(:,l) 
+                  NoiseScale*ENoiseFac_12*rootE_21(l)*rootE_21(lmin:lmax)*Xi(PP_n_12_s_21)%T(:,l) 
                if (PP_s_11_n_22/=0) C%C(lmin:lmax,l)=C%C(lmin:lmax,l) + &
-                  NoiseScale*ENoiseFac*rootE_11(l)*rootE_11(lmin:lmax)*Xi(PP_s_11_n_22)%T(:,l) 
+                  NoiseScale*ENoiseFac_22*rootE_11(l)*rootE_11(lmin:lmax)*Xi(PP_s_11_n_22)%T(:,l) 
                if (PP_s_12_n_21/=0) C%C(lmin:lmax,l)=C%C(lmin:lmax,l) + &
-                  NoiseScale*ENoiseFac*rootE_12(l)*rootE_12(lmin:lmax)*Xi(PP_s_12_n_21)%T(:,l) 
+                  NoiseScale*ENoiseFac_21*rootE_12(l)*rootE_12(lmin:lmax)*Xi(PP_s_12_n_21)%T(:,l) 
               end if
             end do
         
@@ -1279,17 +1296,17 @@ subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl
            !     + PFid%Cl(l,C_E)*(Xi(s_11_s_22)%EB(:,l)+Xi(s_12_s_21)%EB(:,l))*PFid%Cl(lmin:lmax,C_E) &  !Leakage, check
               if (incnoise) then
               if (n_11_n_22/=0) C%C(lmin:lmax,l)=C%C(lmin:lmax,l)+ &
-                       crossNoiseFac*EnoiseFac**2*Xi(PP_n_11_n_22)%T(:,l)
+                       crossNoiseFac*EnoiseFac2*Xi(PP_n_11_n_22)%T(:,l)
               if (n_12_n_21/=0) C%C(lmin:lmax,l)=C%C(lmin:lmax,l)+ &
-                       crossNoiseFac*EnoiseFac**2*Xi(PP_n_12_n_21)%T(:,l)
+                       crossNoiseFac*EnoiseFac2*Xi(PP_n_12_n_21)%T(:,l)
               if (n_11_s_22/=0) C%C(lmin:lmax,l)=C%C(lmin:lmax,l)+ &
-                      NoiseScale*ENoiseFac*rootB_22(l)*rootB_22(lmin:lmax)*Xi(PP_n_11_s_22)%T(:,l)
+                      NoiseScale*ENoiseFac_11*rootB_22(l)*rootB_22(lmin:lmax)*Xi(PP_n_11_s_22)%T(:,l)
               if (n_12_s_21/=0) C%C(lmin:lmax,l)=C%C(lmin:lmax,l)+ &
-                      NoiseScale*ENoiseFac*rootB_21(l)*rootB_21(lmin:lmax)*Xi(PP_n_12_s_21)%T(:,l)
+                      NoiseScale*ENoiseFac_12*rootB_21(l)*rootB_21(lmin:lmax)*Xi(PP_n_12_s_21)%T(:,l)
               if (s_11_n_22/=0) C%C(lmin:lmax,l)=C%C(lmin:lmax,l)+ &
-                      NoiseScale*ENoiseFac*rootB_11(l)*rootB_11(lmin:lmax)*Xi(PP_s_11_n_22)%T(:,l)
+                      NoiseScale*ENoiseFac_22*rootB_11(l)*rootB_11(lmin:lmax)*Xi(PP_s_11_n_22)%T(:,l)
               if (s_12_n_21/=0) C%C(lmin:lmax,l)=C%C(lmin:lmax,l)+ &
-                      NoiseScale*ENoiseFac*rootB_21(l)*rootB_21(lmin:lmax)*Xi(PP_s_12_n_21)%T(:,l)
+                      NoiseScale*ENoiseFac_21*rootB_21(l)*rootB_21(lmin:lmax)*Xi(PP_s_12_n_21)%T(:,l)
               end if
             end do
 
@@ -1342,9 +1359,9 @@ subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl
  
               if (incnoise) then
               if (PM_n_11_s_22/=0)    C%C(lmin:lmax,l) =   C%C(lmin:lmax,l) + &                
-                       NoiseScale*ENoiseFac* (AvP%Cl(lmin:lmax,C_C)+AvP%Cl(l,C_C))/2* Xi(PM_n_11_s_22)%T(:,l) 
+                       NoiseScale*ENoiseFac_11* (AvP%Cl(lmin:lmax,C_C)+AvP%Cl(l,C_C))/2* Xi(PM_n_11_s_22)%T(:,l) 
               if (MP_s_12_n_21/=0)    C%C(lmin:lmax,l) =   C%C(lmin:lmax,l) + &                
-                       NoiseScale*ENoiseFac* (AvP%Cl(lmin:lmax,C_C)+AvP%Cl(l,C_C))/2* Xi(MP_s_12_n_21)%T(:,l) 
+                       NoiseScale*ENoiseFac_21* (AvP%Cl(lmin:lmax,C_C)+AvP%Cl(l,C_C))/2* Xi(MP_s_12_n_21)%T(:,l) 
               end if
             end do
             if (step==nstep) then
@@ -1368,17 +1385,17 @@ subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl
 
               if (incnoise) then
               if (PP_n_11_n_22/=0) C%C(lmin:lmax,l) =  C%C(lmin:lmax,l) + &
-                               crossNoiseFac*EnoiseFac**2*(Xi(PP_n_11_n_22)%EB(:,l))  
+                               crossNoiseFac*EnoiseFac2*(Xi(PP_n_11_n_22)%EB(:,l))  
               if (PP_n_12_n_21/=0)  C%C(lmin:lmax,l) =  C%C(lmin:lmax,l) + &
-                               crossNoiseFac*EnoiseFac**2*(Xi(PP_n_12_n_21)%EB(:,l))  
+                               crossNoiseFac*EnoiseFac2*(Xi(PP_n_12_n_21)%EB(:,l))  
               if (PP_n_11_s_22/=0) C%C(lmin:lmax,l) =  C%C(lmin:lmax,l)  &
-                         + NoiseScale*EnoiseFac*rootE_22(l)*rootE_22(lmin:lmax)*Xi(PP_n_11_s_22)%EB(:,l)
+                         + NoiseScale*EnoiseFac_11*rootE_22(l)*rootE_22(lmin:lmax)*Xi(PP_n_11_s_22)%EB(:,l)
               if (PP_n_12_s_21/=0) C%C(lmin:lmax,l) =  C%C(lmin:lmax,l)  &
-                         + NoiseScale*EnoiseFac*rootE_21(l)*rootE_21(lmin:lmax)*Xi(PP_n_12_s_21)%EB(:,l)
+                         + NoiseScale*EnoiseFac_12*rootE_21(l)*rootE_21(lmin:lmax)*Xi(PP_n_12_s_21)%EB(:,l)
               if (PP_s_11_n_22/=0) C%C(lmin:lmax,l) =  C%C(lmin:lmax,l)  &
-                         + NoiseScale*EnoiseFac*rootE_11(l)*rootE_11(lmin:lmax)*Xi(PP_s_11_n_22)%EB(:,l)
+                         + NoiseScale*EnoiseFac_22*rootE_11(l)*rootE_11(lmin:lmax)*Xi(PP_s_11_n_22)%EB(:,l)
               if (PP_s_12_n_21/=0) C%C(lmin:lmax,l) =  C%C(lmin:lmax,l)  &
-                         + NoiseScale*EnoiseFac*rootE_12(l)*rootE_12(lmin:lmax)*Xi(PP_s_12_n_21)%EB(:,l)
+                         + NoiseScale*EnoiseFac_21*rootE_12(l)*rootE_12(lmin:lmax)*Xi(PP_s_12_n_21)%EB(:,l)
               end if 
              end do
             

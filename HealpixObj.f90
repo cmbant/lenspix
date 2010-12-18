@@ -484,17 +484,24 @@ contains
    end subroutine HealpixAlm_Init
 
 
-  subroutine HealpixAlm_Assign(AOut, Ain)
+  subroutine HealpixAlm_Assign(AOut, Ain, max_pol)
    Type(HealpixAlm) :: AOut, Ain
+   integer, intent(in), optional :: max_pol
    integer status
+   integer maxp
 
+   if (present(max_pol)) then
+    maxp=max_pol
+   else
+    maxp =Ain%npol
+   end if 
    call HealpixAlm_Free(AOut)
    Aout = Ain 
    nullify(AOut%TEB, AOut%SpinEB, AOut%Phi)
-   if (Ain%npol>0) then
-      ALLOCATE(AOut%TEB(1:AOut%npol, 0:AOut%lmax, 0:AOut%lmax),stat = status)
+   if (maxp>0) then
+      ALLOCATE(AOut%TEB(1:maxp, 0:AOut%lmax, 0:AOut%lmax),stat = status)
       if (status /= 0) call MpiStop('No Mem: HealpixAlm_Assign')
-     AOut%TEB= Ain%TEB
+     AOut%TEB(1:maxp,:,:)= Ain%TEB(1:maxp,:,:)
    end if
    if (AIn%spin /= nospinmap) then
         ALLOCATE(AOut%SpinEB(2, 0:AOut%lmax, 0:AOut%lmax),stat = status)
@@ -1164,7 +1171,7 @@ contains
    integer, optional :: map_limit
    integer nmaps
    
-   Type(HealpixMap) OutMap 
+   Type(HealpixMap) OutMap, TmpMap 
 
    call HealpixMap_Free(OutMap)
     
@@ -1186,13 +1193,25 @@ contains
      call MpiStop('')
    endif
 
-   call HealpixMap_AllocateTQU(OutMap,nmaps) 
    OutMap%HasPhi = .false.
    OutMap%spin = nospinmap
- 
-   call input_map(fname, OutMAP%TQU, OutMap%npix, nmaps, &
+   if (OutMap%nmaps/=nmaps) then
+     TmpMap=OutMap
+     call HealpixMap_AllocateTQU(TmpMap,TmpMap%nmaps) 
+     call input_map(fname, TmpMAP%TQU, OutMap%npix, TmpMap%nmaps, &
        &   fmissval=fmissval, header= header_in)
-
+     OutMap%nmaps=nmaps
+     nullify(OutMap%TQU)
+     call HealpixMap_AllocateTQU(OutMap,nmaps)
+     OutMap%TQU(:,1:nmaps)=TmpMap%TQU(:,1:nmaps)
+     call HealpixMap_Free(TmpMap)     
+   else
+    call HealpixMap_AllocateTQU(OutMap,nmaps) 
+    call input_map(fname, OutMAP%TQU, OutMap%npix, OutMap%nmaps, &
+       &   fmissval=fmissval, header= header_in)
+   end if
+       
+   
 !!To do, boring...
   ! do j=1,nmaps
   !   call get_card(header_in, trim(numcat('TTYPE',j)), ttype(j))
@@ -1509,10 +1528,10 @@ contains
      
      Pows%nmaps = nmap
      Pows%lmax = almax
-     Pows%npol = M(1)%nmaps
-     if (Pows%npol /=1 .and. Pows%npol /=3) call MpiStop('HealpixMapSet2CrossPowers: must be scalar or pol')
-
+     Pows%npol=0
      do i=1,nmap
+       if (M(i)%nmaps /=1 .and. M(i)%nmaps /=3) call MpiStop('HealpixMapSet2CrossPowers: must be scalar or pol')
+        Pows%npol = max(Pows%npol,M(i)%nmaps)
         if(dofree) then
          allocate(maps(i)%M(0:size(M(i)%TQU,1)-1,size(M(i)%TQU,2)))
          maps(i)%M = M(i)%TQU
@@ -1521,7 +1540,8 @@ contains
         maps(i)%M => M(i)%TQU
         end if
      end do
-
+ 
+ 
      if (Pows%npol==1) then
       call maparray2scalcrosspowers(H, almax, maps, Pows,  nmap, dofree)
      else

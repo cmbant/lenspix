@@ -2551,11 +2551,15 @@ contains
     Type (HealpixCrossPowers) :: P
     integer, intent(in) :: nmaps
     Type(HealpixPackedAlms) :: A
+    Type(HealpixPackedScalAlms) :: AT
     CHARACTER(LEN=*), PARAMETER :: code = 'MAPARRAY2CROSSPOWERS'
     integer l,i,j,m, ix, polx,poly
     real(DP), dimension(:,:,:,:), allocatable :: Cl
     logical, intent(in), optional :: free
     logical dofree
+    integer nT,nP
+    Type (HealpixMapArray) :: MapsT(nmaps), MapsP(nmaps)
+    integer numMaps(nmaps), indices(nmaps)
 
 #ifdef MPIPIX    
     double precision Initime
@@ -2564,9 +2568,49 @@ contains
      dofree=free
     else
      dofree = .false.
-    end if  
-    call maparray2packedpolalms(H,inlmax, maps, A, nmaps, dofree)
-
+    end if
+    nT=0  
+    do i=1,nmaps
+     if (size(maps(i)%M,2)==1) then
+      nT=nT+1
+      numMaps(i)=1
+      indices(i)=nT
+      if (dofree) then
+        allocate(mapsT(nT)%M(0:size(Maps(i)%M,1)-1,1))
+        mapsT(nT)%M = Maps(i)%M
+        deallocate(Maps(i)%M)
+      else
+        MapsT(nT)%M => maps(i)%M
+      end if
+     end if 
+    end do
+    
+    if (nT==0) then !no maps with only temperature
+     call maparray2packedpolalms(H,inlmax, maps, A, nmaps, dofree)
+     numMaps=3
+     do i=1,nmaps
+      indices(i)=i
+     end do
+    else
+        nP=0  
+        do i=1,nmaps
+         if (size(maps(i)%M,2)==3) then
+          nP=nP+1
+          numMaps(i)=3
+          indices(i)=nP
+          if (dofree) then
+            allocate(mapsT(nP)%M(0:size(Maps(i)%M,1)-1,3))
+            mapsP(nP)%M = Maps(i)%M
+            deallocate(Maps(i)%M)
+          else
+            MapsP(nP)%M => maps(i)%M
+          end if
+         end if 
+        end do
+      call maparray2packedscalalms(H,inlmax, mapsT, AT, nT, dofree)
+      call maparray2packedpolalms(H,inlmax, mapsP, A, nP, dofree)
+    
+    end if
     if (H%MpiId==0) then
 #ifdef MPIPIX
      if(DebugMsgs>1) print *,code //': Getting C_l '
@@ -2580,7 +2624,7 @@ contains
      do i=1, nmaps
       do j=1, nmaps
       !We are duplicating work when polx==poly, never mind   
-       allocate(P%Ps(i,j)%Cl(0:inlmax,3,3))
+       allocate(P%Ps(i,j)%Cl(0:inlmax,numMaps(i),numMaps(j)))
        P%Ps(i,j)%Cl=0
       end do
      end do  
@@ -2590,8 +2634,22 @@ contains
           do polx=1,3
            do poly=1,polx
             do i=1, nmaps
+             if (polx > numMaps(i)) cycle
              do j=1, nmaps   
-              Cl(j,i,poly,polx)= REAL(A%alms(i,polx,ix))*REAL(A%alms(j,poly,ix))
+             
+              if (numMaps(j)==3 .and. numMaps(i)==3) then
+                Cl(j,i,poly,polx)= REAL(A%alms(indices(i),polx,ix))*REAL(A%alms(indices(j),poly,ix))
+              else 
+               if (poly > numMaps(j)) cycle
+               if (numMaps(j)==1 .and. numMaps(i)==3) then
+                 Cl(j,i,poly,polx)= REAL(A%alms(indices(i),polx,ix))*REAL(AT%alms(indices(j),ix))
+               else  if (numMaps(j)==3 .and. numMaps(i)==1) then
+                 Cl(j,i,poly,polx)= REAL(AT%alms(indices(i),ix))*REAL(A%alms(indices(j),poly,ix))
+               else
+                 Cl(j,i,poly,polx)= REAL(AT%alms(indices(i),ix))*REAL(AT%alms(indices(j),ix))
+               end if
+              
+               end if
              end do
             end do 
            end do
@@ -2603,8 +2661,22 @@ contains
            do polx=1,3
             do poly=1,polx
               do i=1, nmaps
+              if (polx > numMaps(i)) cycle
                do j=1, nmaps   
-                Cl(j,i,poly,polx) = Cl(j,i,poly,polx) + 2*REAL(A%alms(i,polx,ix)*CONJG(A%alms(j,poly,ix)))
+                  if (numMaps(j)==3 .and. numMaps(i)==3) then
+                    Cl(j,i,poly,polx) = Cl(j,i,poly,polx) + 2*REAL(A%alms(indices(i),polx,ix)*CONJG(A%alms(indices(j),poly,ix)))
+                  else 
+                   if (poly > numMaps(j)) cycle
+                   if (numMaps(j)==1 .and. numMaps(i)==3) then
+                    Cl(j,i,poly,polx) = Cl(j,i,poly,polx) + 2*REAL(A%alms(indices(i),polx,ix)*CONJG(AT%alms(indices(j),ix)))
+                   else  if (numMaps(j)==3 .and. numMaps(i)==1) then
+                    Cl(j,i,poly,polx) = Cl(j,i,poly,polx) + 2*REAL(AT%alms(indices(i),ix)*CONJG(A%alms(indices(j),poly,ix)))
+                   else
+                    Cl(j,i,poly,polx) = Cl(j,i,poly,polx) + 2*REAL(AT%alms(indices(i),ix)*CONJG(AT%alms(indices(j),ix)))
+                   end if
+                  
+                  end if
+
                end do
              end do  
             end do
@@ -2612,19 +2684,17 @@ contains
          
          end do !m
 
-      do polx=1,3
-       do poly=1,polx
         do i=1, nmaps
          do j=1, nmaps   
-           P%Ps(i,j)%Cl(l,polx,poly) =Cl(j,i,poly,polx)/(2*l+1)
+           P%Ps(i,j)%Cl(l,1:numMaps(i),1:numMaps(j)) =Cl(j,i,1:numMaps(i),1:numMaps(j))/(2*l+1)
          end do
         end do 
-       end do
-      end do  
+
      end do !l
      deallocate(Cl)
 
      deallocate(A%alms)
+     if (nT/=0) deallocate(AT%alms)
 #ifdef MPIPIX
      if (DebugMsgs>0) print *,code // ' Time: ', GeteTime() - iniTime
 #endif
