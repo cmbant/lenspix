@@ -92,18 +92,20 @@ contains
 
   ! Plot map as PPM image using given projection and colourmap
 
-  subroutine HealpixVis_map2ppm(M, ppm, projection, n, nx, ny, plot, symmetric)
+  subroutine HealpixVis_map2ppm(M, ppm, projection, n, nx, ny, plot, symmetric, size_scale)
     type(HealpixMap), intent(in) :: M
     type(HealpixPPM), intent(inout) :: ppm
     integer, intent(in), optional :: n
     integer, intent(in), optional :: nx, ny
     integer, intent(in), optional :: plot
     logical, intent(in), optional :: symmetric
+    real(SP), intent(in), optional :: size_scale
     character(LEN=*), intent(in), optional :: projection
     character proj
     integer plotopt
     integer nn, nyy,nxx
     logical symm
+    real(SP) scale
     real(SP), dimension(:), allocatable :: AmpArr
 
     if (present(plot)) then
@@ -111,6 +113,11 @@ contains
      else
        plotopt = splot_none
     end if   
+    if (present(size_scale)) then
+     scale = size_scale
+    else 
+     scale=1 
+    end if
 
     if (present(symmetric)) then
      symm = symmetric
@@ -131,19 +138,19 @@ contains
       end if
 
      if (present(nx)) then
-         nxx = nx
+         nxx = nint(nx*scale)
         else
          if (proj=='O') then
-           nxx = HealpixVis_DEF_HEIGHT
+           nxx = nint(HealpixVis_DEF_HEIGHT * scale)
           else
-           nxx = HealpixVis_DEF_WIDTH
+           nxx = nint(HealpixVis_DEF_WIDTH * scale)
           end if
        end if
 
        if (present(ny)) then
-         nyy = ny
+         nyy = nint(ny*scale)
         else
-         nyy = HealpixVis_DEF_HEIGHT
+         nyy = nint(HealpixVis_DEF_HEIGHT*scale)
        end if
 
     if (plotopt /= splot_none) then
@@ -269,16 +276,24 @@ contains
   end subroutine HealpixVis_map2Anim
 
 
- subroutine HealpixVis_Map2ppmfile(M, fname, projection, plot, n, symmetric)
+ subroutine HealpixVis_Map2ppmfile(M, fname, projection, plot, n, symmetric, size_scale)
     type(HealpixMap), intent(in) :: M
     type(HealpixPPM):: ppm
     character(LEN=*), intent(in) :: fname
     character(LEN=*), intent(in), optional :: projection
     integer, intent(in), optional :: plot, n
     logical, intent(in), optional ::  symmetric
+    real(SP), intent(in), optional :: size_scale
     integer splot, an
     logical symm
+    real(sp) :: scale
 
+    if (present(size_scale)) then
+     scale= size_scale
+    else
+     scale=1
+    end if 
+    
     splot = splot_none
     if (present(plot)) then
       splot = plot
@@ -297,9 +312,9 @@ contains
     end if
 
     if (present(projection)) then 
-     call HealpixVis_Map2PPM(M,ppm,projection,n=an,plot = splot, symmetric=symm)
+     call HealpixVis_Map2PPM(M,ppm,projection,n=an,plot = splot, symmetric=symm, size_scale=scale)
     else 
-     call HealpixVis_Map2PPM(M,ppm,n=an,plot = splot, symmetric=symm)
+     call HealpixVis_Map2PPM(M,ppm,n=an,plot = splot, symmetric=symm, size_scale=scale)
     end if
 
     call HealpixVis_ppm_write(ppm, fname)

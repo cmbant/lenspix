@@ -758,6 +758,21 @@ contains
     end if
 
   end function HealpixMap_Ang2Pix
+  
+  subroutine HealpixMap_Pix2Ang(M, pix, theta, phi) 
+    use pix_tools
+    Type(HealpixMap) :: M
+    integer, intent(in) :: pix
+    real(dp), intent(out):: theta, phi
+    
+    if (M%Ordering == ord_ring) then
+     call Pix2Ang_ring(M%nside,pix,theta,phi) 
+    else
+     call Pix2Ang_nest(M%nside,pix,theta,phi) 
+    end if
+
+  end subroutine HealpixMap_Pix2Ang
+  
 
   subroutine Healpix_GetRotation(R, theta, phi, chi)
 !Rotate phi about z axis, then rotation by theta about new y axis, then chi about new z axis
