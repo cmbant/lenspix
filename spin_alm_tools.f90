@@ -1,6 +1,6 @@
 !MPI Healpix routines, including generation of spin-s maps, 
 !mapping gradients of scalars and the exact and approx weak lensed CMB 
-!Antony Lewis 2004-2010, Based on Healpix 2
+!Antony Lewis 2004-2011, Based on Healpix 2
 
 !Requires linking to Healpix libraries:
 !See http://www.eso.org/science/healpix/
@@ -21,6 +21,7 @@
 !Jan 2008: further memory reductions for non-lensed; one MPI thread workarounds for scalar
 !Oct 2010: corrected approximate handling of pole region interpolation (tiny area, virtually no effect)
 !Nov 2010: fixes for bugs that only showed up in gfortran (thanks to Giancarlo de Gasperis)
+!Apr 2011: Fixed wrap-around of phi during interp lensing
 
 module MPIstuff
 implicit none
@@ -5487,8 +5488,9 @@ contains
     !Patch in from both ends in phi so nice and smooth for interpolation 
     ! (can't be bothered to try to change interpolation for periodic boundary conditions)
     do ith = cyl_start_edge, cyl_end_edge
-     high_res(-interp_edge:-1,ith) = high_res(n_phi_cyl-1-interp_edge:n_phi_cyl-1-1,ith)
-     high_res(n_phi_cyl:n_phi_cyl+interp_edge-1,ith) = high_res(0:interp_edge-1,ith)
+!     high_res(-interp_edge:-1,ith) = high_res(n_phi_cyl-1-interp_edge:n_phi_cyl-1-1,ith)
+      high_res(-interp_edge:-1,ith) = high_res(n_phi_cyl-interp_edge:n_phi_cyl-1,ith)
+      high_res(n_phi_cyl:n_phi_cyl+interp_edge-1,ith) = high_res(0:interp_edge-1,ith)
     end do
     
     do ith = cyl_start_edge,cyl_end_ix 
@@ -5548,7 +5550,7 @@ contains
         if (phi >2._dp*pi) then
               phi = phi- 2._dp*pi  
            else if (phi< 0._dp) then
-              phi = 2._dp*pi - phi
+              phi = 2._dp*pi + phi
            end if 
            
         theta_lensed_vals(ring_ix) = dacos(cth)
@@ -5982,7 +5984,7 @@ contains
     !Patch in from both ends in phi so nice and smooth for interpolation 
     ! (can't be bothered to try to change interpolation for periodic boundary conditions)
     do ith = cyl_start_edge, cyl_end_edge
-     high_res(-interp_edge:-1,ith,:) = high_res(n_phi_cyl-1-interp_edge:n_phi_cyl-1-1,ith,:)
+     high_res(-interp_edge:-1,ith,:) = high_res(n_phi_cyl-interp_edge:n_phi_cyl-1,ith,:)
      high_res(n_phi_cyl:n_phi_cyl+interp_edge-1,ith,:) = high_res(0:interp_edge-1,ith,:)
     end do
     
@@ -6045,7 +6047,7 @@ contains
         if (phi >2._dp*pi) then
               phi = phi- 2._dp*pi  
            else if (phi< 0._dp) then
-              phi = 2._dp*pi - phi
+              phi = 2._dp*pi + phi
            end if
 
         theta_lensed_vals(ring_ix) = dacos(cth)
