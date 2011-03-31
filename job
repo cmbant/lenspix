@@ -1,12 +1,25 @@
-#!/bin/csh -f
-#PBS -N lenspix
-#PBS -l nodes=32:ppn=1
-#PBS -q workq
-#PBS -r n
-
-lamboot
-cd $PBS_O_WORKDIR
+#!/bin/bash
+#PBS -N lensbi
+#PBS -j oe
+#PBS -V
 #
-cd /home/antlewis/lenspix
-time mpirun C -O ./simlens params.ini > outfile
-lamhalt
+# Resource specifications - please be accurate
+#
+#PBS -l ncpus=12
+#PBS -l walltime=20:20:00
+#PBS -l mem=12gb
+#
+# Get the number of allocated CPUs
+NP=$(wc -l $PBS_NODEFILE |cut -d" " -f1)
+# some defaults
+OMP_NUM_THREADS=1
+unset MPI_DSM_DISTRIBUTE MPI_OPENMP_INTEROP MPI_NAP
+# To switch on the use of unbuffered, single copy transport
+# in these cases you can set MPI_BUFFER_MAX to 0
+export MPI_BUFFER_MAX=0
+# MPI can improve the bandwidth of large messages
+# if MPI_GRU_CBS  is set to 0
+export MPI_GRU_CBS=0
+
+cd $PBS_O_WORKDIR
+mpirun -np $NP dplace -s1 ./simlens params.ini 1 > out1.txt
