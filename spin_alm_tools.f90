@@ -3728,7 +3728,7 @@ contains
             cth =  cos(grad_len) * cth0 - sinc_grad_len *sth0*real(grad_phi(ring_ix)) 
             sth = sqrt((1._dp-cth)*(1._dp+cth))
             if (sth > 1e-10_dp) then
-             phi = phi + asin(aimag(grad_phi(ring_ix))*sinc_grad_len/ sth ) 
+             phi = phi + asin(max(-1._dp,min(1._dp,aimag(grad_phi(ring_ix))*sinc_grad_len/ sth ))) 
             end if
         else
          cth=cth0
@@ -3752,7 +3752,7 @@ contains
          cth =  -cos(grad_len) * cth0 - sinc_grad_len *sth0*real(grad_phi(ring_ix)) 
          sth = sqrt((1._dp-cth)*(1._dp+cth))
          if (sth > 1e-10_dp) then
-          phi = phi +asin(aimag(grad_phi(ring_ix))*sinc_grad_len/ sth ) 
+          phi = phi +asin(max(-1._dp,min(1._dp,aimag(grad_phi(ring_ix))*sinc_grad_len/ sth ))) 
          end if
 
        else
@@ -3916,7 +3916,7 @@ contains
             sinc_grad_len = sin(grad_len)/grad_len
             cth =  cos(grad_len) * cth0 - sinc_grad_len *sth0*real(grad_phi(ring_ix)) 
             sth = max(1e-10_dp,sqrt((1._dp-cth)*(1._dp+cth)))
-            phi = phi  +  asin(aimag(grad_phi(ring_ix))*sinc_grad_len/ sth )
+            phi = phi  +  asin(max(-1._dp,min(1._dp,aimag(grad_phi(ring_ix))*sinc_grad_len/ sth )))
         else
          cth=cth0
          sth=sth0
@@ -4064,7 +4064,7 @@ contains
             sinc_grad_len = sin(grad_len)/grad_len
             cth =  -cos(grad_len) * cth0 - sinc_grad_len *sth0*real(grad_phi(ring_ix)) 
             sth = max(1e-10_dp,sqrt((1._dp-cth)*(1._dp+cth)))
-            phi = phi + asin(aimag(grad_phi(ring_ix))*sinc_grad_len/ sth )
+            phi = phi + asin(max(-1._dp,min(1._dp,aimag(grad_phi(ring_ix))*sinc_grad_len/ sth )))
         else
          cth=-cth0
          sth=sth0
@@ -4568,7 +4568,7 @@ contains
             sinc_grad_len = sin(grad_len)/grad_len
             cth =  cos(grad_len) * cth0 - sinc_grad_len *sth0*real(grad_phi(ring_ix)) 
             sth = max(1e-10_dp,sqrt((1._dp-cth)*(1._dp+cth)))
-            phi = phi  + asin(aimag(grad_phi(ring_ix))*sinc_grad_len/ sth )
+            phi = phi  + asin(max(-1._dp,min(1._dp,aimag(grad_phi(ring_ix))*sinc_grad_len/ sth )))
         else
          cth=cth0
          sth=sth0
@@ -4593,7 +4593,7 @@ contains
                 sinc_grad_len = sin(grad_len)/grad_len
                 cth =  -cos(grad_len) * cth0 - sinc_grad_len *sth0*real(grad_phi(ring_ix)) 
                 sth = max(1e-10_dp,sqrt((1._dp-cth)*(1._dp+cth)))
-                phi = phi + asin(aimag(grad_phi(ring_ix))*sinc_grad_len/ sth )
+                phi = phi + asin(max(-1._dp,min(1._dp,aimag(grad_phi(ring_ix))*sinc_grad_len/ sth )))
             else
              cth=-cth0
              sth=sth0
@@ -5008,7 +5008,7 @@ contains
             sinc_grad_len = sin(grad_len)/grad_len
             cth =  cos(grad_len) * cth0 - sinc_grad_len *sth0*real(grad_phi(ring_ix)) 
             sth = max(1e-10_dp,sqrt((1._dp-cth)*(1._dp+cth)))
-            phi = phi  + asin(aimag(grad_phi(ring_ix))*sinc_grad_len/ sth )
+            phi = phi  + asin(max(-1._dp,min(1._dp,aimag(grad_phi(ring_ix))*sinc_grad_len/ sth )))
         else
          cth=cth0
          sth=sth0
@@ -5541,7 +5541,7 @@ contains
             sinc_grad_len = sin(grad_len)/grad_len
             cth =  topbottom*cos(grad_len) * cth0 - sinc_grad_len *sth0*real(this_grad) 
             sth = max(1e-10_dp,sqrt((1._dp-cth)*(1._dp+cth)))
-            phi = phi  +  asin(aimag(this_grad)*sinc_grad_len/ sth )
+            phi = phi  +  asin(max(-1._dp,min(1._dp,aimag(this_grad)*sinc_grad_len/ sth )))
         else
          cth=topbottom*cth0
         endif
@@ -6037,7 +6037,7 @@ contains
             sinc_grad_len = sin(grad_len)/grad_len
             cth =  topbottom*cos(grad_len) * cth0 - sinc_grad_len *sth0*real(this_grad) 
             sth = max(1e-10_dp,sqrt((1._dp-cth)*(1._dp+cth)))
-            phi = phi  + asin(aimag(this_grad)*sinc_grad_len/ sth )
+            phi = phi  + asin(max(-1._dp,min(1._dp,aimag(this_grad)*sinc_grad_len/ sth )))
         else
          cth=topbottom*cth0
          sth=sth0

@@ -1,12 +1,12 @@
 #!/bin/bash
-#PBS -N lensbi
+#PBS -N lenspix
 #PBS -j oe
 #PBS -V
 #
 # Resource specifications - please be accurate
 #
 #PBS -l ncpus=12
-#PBS -l walltime=20:20:00
+#PBS -l walltime=02:00:00
 #PBS -l mem=12gb
 #
 # Get the number of allocated CPUs
@@ -22,4 +22,4 @@ export MPI_BUFFER_MAX=0
 export MPI_GRU_CBS=0
 
 cd $PBS_O_WORKDIR
-mpirun -np $NP dplace -s1 ./simlens params.ini 1 > out1.txt
+mpirun -np $NP dplace -s1 ./simlens params.ini 1 > lenspix_out.txt

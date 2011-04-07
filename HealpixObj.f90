@@ -847,6 +847,21 @@ contains
     
   end subroutine HealpixMap_MarkEclipticPlane
 
+
+  subroutine HealpixMap_GalacticToEcliptic(M)
+   !Not at all optimal
+    Type(HealpixMap) M, M2
+    integer i
+    real(dp) theta,phi
+    
+    call HealpixMap_Assign(M2,M)
+    do i=0, M%npix-1
+      call HealpixMap_Pix2Ang(M, i, theta, phi) 
+      M%TQU(i,:) = M2%TQU(HealpixMap_EclipticPixel(M,theta,phi),:)
+    end do
+    call HealpixMap_Free(M2)
+    
+  end subroutine HealpixMap_GalacticToEcliptic
  
   subroutine HealpixMap_AddWhiteNoise(M, N_T, N_QU )
   !N_T and N_QU are the N_l of the noise
