@@ -1,4 +1,3 @@
-!MPI Healpix routines, including generation of spin-s maps, 
 !mapping gradients of scalars and the exact and approx weak lensed CMB 
 !Antony Lewis 2004-2011, Based on Healpix 2
 
@@ -22,6 +21,7 @@
 !Oct 2010: corrected approximate handling of pole region interpolation (tiny area, virtually no effect)
 !Nov 2010: fixes for bugs that only showed up in gfortran (thanks to Giancarlo de Gasperis)
 !Apr 2011: Fixed wrap-around of phi during interp lensing
+!Jul 2011: Changes for high pix number (consistent with healpix 2.2)
 
 module MPIstuff
 implicit none
@@ -125,10 +125,18 @@ module spinalm_tools
   use utilities, only: die_alloc
   use healpix_types
   use healpix_fft, only : real_fft
+  use pix_tools, ONLY :  nside2npix
+ 
   IMPLICIT none
 
+#ifdef HEALPIXI4B  
+  integer, parameter :: I_NPIX = I4B !I4B in older versions
+#else
+  integer, parameter :: I_NPIX = I8B !I4B in older versions
+#endif
   Type HealpixInfo
      integer :: nside, lmax, Lastlmax
+     integer(I_NPIX) :: npix
      logical pol
      REAL(KIND=DP), DIMENSION(:,:), Pointer :: w8ring_TQU  => NULL() 
      INTEGER(I8B), DIMENSION(:), pointer :: istart_south  => NULL() , istart_north => NULL()   
@@ -137,7 +145,7 @@ module spinalm_tools
      integer MpiId, MPISize, MpiStat, last_nph
      integer(I4B), dimension(:), pointer :: ith_start => NULL() , ith_end => NULL() 
      integer, dimension(:), pointer :: North_Start => NULL() , North_Size => NULL() , &
-        South_Start => NULL() , South_Size => NULL() 
+        South_Start => NULL() , South_Size => NULL()   !MPI uses integer type, can't use I8B here
   end type HealpixInfo
 
   Type HealpixMapArray
@@ -200,7 +208,9 @@ module spinalm_tools
             alm2LensedmapInterpCyl, interp_basic, interp_cyl , GeteTime, &
             division_equalrows, division_equalpix, division_balanced, HealpixMapArray, &
             HealpixCrossPowers, HealpixAllCl, maparray2scalcrosspowers,maparray2crosspowers, &
-            HealpixCrossPowers_Free, healpix_wakeMPI, healpix_sleepMPI, scalalm2bispectrum
+            HealpixCrossPowers_Free, healpix_wakeMPI, healpix_sleepMPI, scalalm2bispectrum, &
+            I_NPIX, HealpixPackedScalAlms, HealpixPackedAlms, Alm2PackAlmFiltered, &
+            PackAlm2AlmFiltered, lmax2nalms, maparray2packedscalalms, packedscalalms2maparray
 contains
 
  function GeteTime()
@@ -219,7 +229,7 @@ contains
 
   function a_ix(lmax, l, m) result(index)
     integer, intent(in) :: lmax, l, m
-    integer :: index
+    integer(I_NPIX) :: index
     index = (m*(2*lmax-m+1))/2 + l + 1
   end function a_ix
 
@@ -389,7 +399,7 @@ contains
 !        mean_pix = (nside*(6*nside+2) -  first_pix)/(H%MpiSize-1)
 
         pixels = 0
-        mean_pix = nside*(6*nside+2)/H%MpiSize
+        mean_pix = nside*real(6*nside+2)/H%MpiSize
        end if
 
 
@@ -488,6 +498,12 @@ contains
  
   end subroutine HealpixInit
 
+  function lmax2nalms(lmax)
+    integer, intent(in) :: lmax
+    integer(I_NPIX) :: lmax2nalms
+    lmax2nalms = (int(lmax+1,I_NPIX)*(lmax+2))/2   
+  end function lmax2nalms
+
    subroutine HealpixInitTrig(H, nside, lmax, not_healpix)
     use MPIStuff
     use healpix_types
@@ -495,17 +511,21 @@ contains
     logical not_heal
     Type (HealpixInfo) :: H
     integer, intent(in) :: lmax, nside
-    integer ith, status, nph
+    integer ith, status, nph,test_mpi_int
     CHARACTER(LEN=*), PARAMETER :: code = 'HealpixTrig'
 
 
        nullify(H%trig)
        H%last_nph = -1
        H%lmax = lmax
-   !    H%nalms_max = ((lmax+1)*(lmax+2))/2
        H%Lastlmax = 0
        H%nside = nside
-      
+        !Note nside does not have to be 2^n here, as also used for lensing cylindrical grid
+       H%npix = 12*int(nside,I8B)**2
+       test_mpi_int = H%npix
+       if (H%npix /= test_mpi_int) &
+        stop 'Large npix would need compilation (and MPI library) with long integers'
+       
       not_heal = .false.
       if (present(not_healpix)) not_heal = not_healpix
       
@@ -521,7 +541,7 @@ contains
         if (status /= 0) call die_alloc(code,'istart_south')
 
         H%istart_north(0)=0
-        H%istart_south(0)=12*int(nside,I8B)**2
+        H%istart_south(0)=nside2npix(nside)
         do ith=1,2*nside
            if (ith.lt.nside) then  ! polar cap (north)
               nph = 4*ith
@@ -614,15 +634,16 @@ contains
    subroutine HealpixInitRecfac(H,nlmax)
      Type (HealpixInfo) :: H
      INTEGER(I4B), intent(in):: nlmax
-     integer(I8B) :: m, l  
-     integer status, a_ix
-     integer l2, m2
+     integer(I8B) :: m, l
+     integer(I_NPIX) :: a_ix  
+     integer status 
+     integer(I8B) l2, m2
 
      if (H%MpiId > 0 .and. associated(H%recfac) .and. nlmax == H%Lastlmax) return   
      call HealpixFreeRecfac(H)  
      H%Lastlmax = nlmax
      deallocate(H%recfac,stat= status)
-     ALLOCATE(H%recfac(((nlmax+1)*(nlmax+2))/2),stat = status)    
+     ALLOCATE(H%recfac(lmax2nalms(nlmax)),stat = status)    
      if (status /= 0) call die_alloc('HealpixInitRecfac','recfac')
 
      a_ix = 0
@@ -798,7 +819,7 @@ contains
     INTEGER(I4B), INTENT(IN) :: inlmax 
     integer nsmax
     COMPLEX(SPC), INTENT(IN),  DIMENSION(:,:,:)  :: alm
-    COMPLEX(SPC), INTENT(OUT), DIMENSION(0:12*H%nside**2-1), target :: map_QU
+    COMPLEX(SPC), INTENT(OUT), DIMENSION(0:H%npix-1), target :: map_QU
     COMPLEX(SPC), DIMENSION(:), pointer :: map2N,map2S
     COMPLEX(SPC), DIMENSION(:), allocatable :: alm2
 
@@ -817,11 +838,12 @@ contains
     CHARACTER(LEN=*), PARAMETER :: code = 'ALM2GRADIENTMAP'
     COMPLEX(DPC) ::  b_north_Q(0:H%lmax), b_north_U(0:H%lmax)
     COMPLEX(DPC) ::  b_south_Q(0:H%lmax), b_south_U(0:H%lmax)
-    INTEGER(I4B) :: status,par_lm, a_ix
+    INTEGER(I4B) :: status,par_lm
+    INTEGER(I_NPIX) :: a_ix, nalms
     REAL(DP) , DIMENSION(:), ALLOCATABLE :: cth_l
     REAL(DP), DIMENSION(:), ALLOCATABLE :: lam_fact
     REAL(SP), DIMENSION(:),   ALLOCATABLE :: ringR, ringI
-    integer mmax_ring, nalms, lmin
+    integer mmax_ring, lmin
 #ifdef MPIPIX    
     double precision Initime
 #endif      
@@ -839,7 +861,7 @@ contains
     end if
     call SyncInts(nlmax)
 #endif
-     nalms = ((nlmax+1)*(nlmax+2))/2   
+     nalms = lmax2nalms(nlmax)
      allocate(alm2(nalms),stat = status )
      if (status /= 0) call die_alloc(code,'alm2')
      if (H%MpiId==0) call Alm2PackAlm(alm,alm2,nlmax)
@@ -1141,7 +1163,7 @@ contains
     INTEGER(I4B), INTENT(IN) :: inlmax, inspin
     integer nsmax
     COMPLEX(SPC), INTENT(IN),  DIMENSION(:,:,:) :: alm_EB
-    COMPLEX(SPC), INTENT(OUT), DIMENSION(0:12*H%nside**2-1), target :: map_QU
+    COMPLEX(SPC), INTENT(OUT), DIMENSION(0:H%npix-1), target :: map_QU
     COMPLEX(SPC), DIMENSION(:,:), allocatable :: EB
     COMPLEX(SPC), DIMENSION(:), pointer :: map2
     INTEGER(I4B) :: l, m, ith, scalem, scalel          ! alm related
@@ -1164,7 +1186,7 @@ contains
     REAL(DP), DIMENSION(:), ALLOCATABLE :: lam_fact
     REAL(SP), DIMENSION(:),   ALLOCATABLE :: ringR, ringI
     REAL(DP), DIMENSION(:),   ALLOCATABLE :: normal_l
-    integer a_ix, nalms
+    integer(I_NPIX) a_ix, nalms
 #ifdef MPIPIX
     double precision Initime
 #endif
@@ -1186,14 +1208,14 @@ contains
     end if
      call SyncInts(nlmax,spin)
 #endif
-     nalms = ((nlmax+1)*(nlmax+2))/2   
+     nalms = lmax2nalms(nlmax)  
      allocate(EB(2,nalms))
      if (H%MpiId==0) call EB2PackEB(alm_EB,EB,nlmax)
     
 #ifdef MPIPIX
      call MPI_BCAST(EB,SIze(EB),CSP_MPI, 0, MPI_COMM_WORLD, ierr) 
      if(DebugMsgs>1) print *,code //': Got alm ',H%MpiId, GeteTime() - StartTime
-     allocate(map2(0:12*nsmax**2-1), stat = status)    
+     allocate(map2(0:nside2npix(nsmax)-1), stat = status)    
      if (status /= 0) call die_alloc(code,'map2')
 #else
      map2 => map_QU 
@@ -1450,7 +1472,7 @@ contains
     INTEGER(I4B)  :: nsmax
     INTEGER(I4B), INTENT(IN) :: inlmax
     COMPLEX(SPC), INTENT(OUT),  DIMENSION(:,:,:) :: alm_EB
-    COMPLEX(SPC), INTENT(IN), DIMENSION(0:12*H%nside**2-1), target :: map_QU
+    COMPLEX(SPC), INTENT(IN), DIMENSION(0:H%npix-1), target :: map_QU
     COMPLEX(SPC), DIMENSION(:,:), allocatable :: EB
     COMPLEX(SPC), DIMENSION(:), pointer :: map2
 
@@ -1471,8 +1493,8 @@ contains
     CHARACTER(LEN=*), PARAMETER :: code = 'MAP2SPINALM'
     COMPLEX(DPC), DIMENSION(:), ALLOCATABLE :: phas_nQ, phas_nU
     COMPLEX(DPC), DIMENSION(:), ALLOCATABLE :: phas_sQ, phas_sU
-    INTEGER(I4B) mmax_ring, status, par_lm, a_ix
-    integer nalms
+    INTEGER(I4B) mmax_ring, status,par_lm
+    integer(I_NPIX) a_ix, nalms
 
     REAL(DP), DIMENSION(:), ALLOCATABLE :: lam_fact
     REAL(DP), DIMENSION(:),   ALLOCATABLE :: ring
@@ -1494,7 +1516,7 @@ contains
       call SendMessages(H,code)
       map2 => map_QU
     else
-       allocate(map2(0:12*H%nside**2-1),stat = status) 
+       allocate(map2(0:H%npix-1),stat = status) 
        if (status /= 0) call die_alloc(code,'map2')   
     end if
 
@@ -1511,7 +1533,7 @@ contains
     map2 => map_QU
 #endif
 
-    nalms = ((nlmax+1)*(nlmax+2))/2   
+    nalms = lmax2nalms(nlmax)  
 
     ALLOCATE(lam_fact(nalms),stat = status)    
     if (status /= 0) call die_alloc(code,'lam_fact')
@@ -1857,7 +1879,7 @@ contains
     INTEGER(I4B) :: nsmax
     INTEGER(I4B), INTENT(IN) :: inlmax
     COMPLEX(SPC), INTENT(IN),  DIMENSION(:,:,:) :: alm
-    REAL(SP),     INTENT(OUT), DIMENSION(0:12*H%nside**2-1), target :: map
+    REAL(SP),     INTENT(OUT), DIMENSION(0:H%npix-1), target :: map
 
     REAL(SP),     DIMENSION(:), pointer :: map2N, map2S
     COMPLEX(SPC), DIMENSION(:), allocatable :: alm2
@@ -1873,7 +1895,7 @@ contains
     CHARACTER(LEN=*), PARAMETER :: code = 'SCALALM2MAP'
     COMPLEX(DPC), DIMENSION(0:H%lmax) :: b_north,b_south
     INTEGER(I4B) :: mmax_ring !,  par_lm
-    integer nalms, a_ix
+    integer(I_NPIX) a_ix, nalms
 
     REAL(SP), DIMENSION(0:4*H%nside-1) :: ring
 #ifdef MPIPIX    
@@ -1894,7 +1916,7 @@ contains
     end if
     call SyncInts(nlmax)
 #endif
-     nalms = ((nlmax+1)*(nlmax+2))/2   
+     nalms = lmax2nalms(nlmax)  
      allocate(alm2(nalms))
      if (H%MpiId==0) call Alm2PackAlm(alm,alm2,nlmax)
     
@@ -2121,14 +2143,14 @@ contains
     Type (HealpixInfo) :: H
     INTEGER(I4B)  :: nsmax
     INTEGER(I4B), INTENT(IN) :: inlmax
-    REAL(SP),     INTENT(IN),  DIMENSION(0:12*H%nside**2-1), target :: map
+    REAL(SP),     INTENT(IN),  DIMENSION(0:H%npix-1), target :: map
     COMPLEX(SPC), INTENT(OUT), DIMENSION(:,:,:) :: alm
     COMPLEX(SPC),   DIMENSION(:), allocatable :: alm2
     REAL(SP),     DIMENSION(:), pointer :: map2N,map2S
     
     REAL(DP),     INTENT(IN) :: cos_theta_cut
 
-    INTEGER(I4B) :: l, m, ith, scalem, scalel, nlmax, a_ix       ! alm related
+    INTEGER(I4B) :: l, m, ith, scalem, scalel, nlmax       ! alm related
     INTEGER(I4B) :: nph, kphi0   ! map related
 
     REAL(DP) :: omega_pix
@@ -2139,8 +2161,10 @@ contains
     CHARACTER(LEN=*), PARAMETER :: code = 'MAP2SCALALM'
     COMPLEX(DPC), DIMENSION(:), ALLOCATABLE :: phas_n
     COMPLEX(DPC), DIMENSION(:), ALLOCATABLE :: phas_s
-    INTEGER(I4B) :: mmax_ring, status, nalms
+    INTEGER(I4B) :: mmax_ring, status
     COMPLEX(DPC) phas_p, phas_m
+   integer(I_NPIX) a_ix, nalms
+
 
     REAL(DP), DIMENSION(:),   ALLOCATABLE :: ring
     LOGICAL   :: keep_it
@@ -2200,7 +2224,7 @@ contains
 
     call HealpixInitRecfac(H,nlmax)
 
-    nalms = ((nlmax+1)*(nlmax+2))/2   
+    nalms = lmax2nalms(nlmax)  
     allocate(alm2(nalms), stat=status)
     if (status /= 0) call die_alloc(code,'alm2')
 
@@ -2722,7 +2746,7 @@ contains
     COMPLEX(SPC), DIMENSION(:,:), pointer :: alm2
     Type (HealpixMapArray), dimension(:), pointer ::  map2N,map2S
     
-    INTEGER(I4B) :: l, m, ith, scalem, scalel, nlmax, a_ix       ! alm related
+    INTEGER(I4B) :: l, m, ith, scalem, scalel, nlmax     ! alm related
     INTEGER(I4B) :: nph, kphi0   ! map related
 
     REAL(DP) :: omega_pix
@@ -2733,8 +2757,9 @@ contains
     CHARACTER(LEN=*), PARAMETER :: code = 'MAPARRAY2PACKEDSCALALMS'
     COMPLEX(DPC), DIMENSION(:,:), ALLOCATABLE :: phas_n
     COMPLEX(DPC), DIMENSION(:,:), ALLOCATABLE :: phas_s
-    INTEGER(I4B) :: mmax_ring, status, nalms
+    INTEGER(I4B) :: mmax_ring, status
     COMPLEX(DPC), dimension(:), allocatable :: phas_p, phas_m
+    integer(I_NPIX) a_ix, nalms
 
     REAL(DP), DIMENSION(:),   ALLOCATABLE :: ring
     integer lmin !, par_lm
@@ -2815,7 +2840,7 @@ contains
 
     call HealpixInitRecfac(H,nlmax)
 
-    nalms = ((nlmax+1)*(nlmax+2))/2
+    nalms = lmax2nalms(nlmax)
     
     allocate(outalm%alms(nmaps,nalms), stat=status)
     if (status /= 0) call die_alloc(code,'alm2')
@@ -2974,202 +2999,223 @@ contains
 
   END subroutine maparray2packedscalalms
 
-
-  subroutine maparray2packedscalalms1(H,nlmax, maps, outalm, nmaps)
     !=======================================================================
-    ! Compute power array 1/(2l+1)\sum_m <alm(1)alm(2)^*> for all maps
-    !=======================================================================
-    !Allocates outalm%alms
-    !This is non-MPI version
-    use MPIStuff
+  subroutine packedscalalms2maparray(H, inlmax, alms, maps, in_nalm, dofree)
+    use MPIstuff
     Type (HealpixInfo) :: H
-    INTEGER(I4B)  :: nsmax
-    INTEGER(I4B), INTENT(IN) :: nlmax
+
+    INTEGER(I4B) :: nsmax
+    INTEGER(I4B), INTENT(IN) :: inlmax, in_nalm
+    Type(HealpixPackedScalAlms) :: alms
     Type (HealpixMapArray), target :: maps(:)
-    Type(HealpixPackedScalAlms) :: outalm
-    integer, intent(in) :: nmaps
-    CHARACTER(LEN=*), PARAMETER :: code = 'MAPARRAY2PACKEDSCALALMS1'
-    
+    logical, intent(in) :: dofree
+
+    Type (HealpixMapArray), DIMENSION(:), pointer :: map2N, map2S
     COMPLEX(SPC), DIMENSION(:,:), pointer :: alm2
-    
-    INTEGER(I4B) :: l, m, ith, scalem, scalel,  a_ix       ! alm related
-    INTEGER(I4B) :: nph, kphi0   ! map related
 
-    REAL(DP) :: omega_pix
+    INTEGER(I4B) :: l, m, ith, scalem, scalel, nlmax          ! alm related
+    INTEGER(I4B) :: nph, kphi0                         ! map related
+
     REAL(DP) :: cth, sth, dth1, dth2, dst1
-    REAL(DP) :: a_rec, lam_mm, lam_0, lam_1, lam_2
-    REAL(DP) ::  f2m, corfac
+    REAL(DP) :: a_rec, lam_mm, lam_lm, lam_0, lam_1, lam_2
+    REAL(DP) :: f2m, corfac
+    COMPLEX(DPC), dimension(:), allocatable :: b_n, b_s, factor, factor2
 
-    COMPLEX(DPC), DIMENSION(:,:), ALLOCATABLE :: phas_n
-    COMPLEX(DPC), DIMENSION(:,:), ALLOCATABLE :: phas_s
-    INTEGER(I4B) :: mmax_ring, status, nalms
-    COMPLEX(DPC), dimension(:), allocatable :: phas_p, phas_m
+    CHARACTER(LEN=*), PARAMETER :: code = 'PACKEDSCALALMS2MAPARRAY'
+    COMPLEX(DPC), DIMENSION(:,:), allocatable :: b_north,b_south
+    INTEGER(I4B) :: mmax_ring !,  par_lm
+    integer(I_NPIX) a_ix, nalms
+    integer nmaps, map_ix
 
-    REAL(DP), DIMENSION(:),   ALLOCATABLE :: ring
-    integer lmin !, par_lm
-    integer map_ix
-    integer istart_north, istart_south
-    !=======================================================================
-
-
-    nsmax = H%nside
-     
- 
-    ALLOCATE(phas_n(0:nlmax,nmaps),stat = status) 
-    if (status /= 0) call die_alloc(code,'phas_n')
-
-    ALLOCATE(phas_s(0:nlmax,nmaps),stat = status) 
-    if (status /= 0) call die_alloc(code,'phas_s')
+    REAL(SP), DIMENSION(0:4*H%nside-1) :: ring
+#ifdef MPIPIX    
+    double precision Initime
+    integer status
+#endif      
+!=======================================================================
   
-    ALLOCATE(phas_p(nmaps),phas_m(nmaps)) 
-  
-    ALLOCATE(ring(0:4*nsmax-1),stat = status) 
-    if (status /= 0) call die_alloc(code,'ring')
+     nsmax = H%nside
+     nlmax = inlmax
+     nmaps = in_nalm
 
-    !     ------------ initiate arrays ----------------
+#ifdef MPIPIX
+    StartTime = Getetime()
+    iniTime = StartTime
+    if (H%MpiId==0) then 
+     print *,code //': Sending to farm ' 
+     call SendMessages(H,code)
+    end if
+    call SyncInts(nlmax,nmaps)
+#endif
+     nalms = lmax2nalms(nlmax)  
+     if (H%MpiId/=0) then
+      allocate(alm2(nmaps,nalms))
+     else
+      alm2 => alms%alms    
+     end if
+#ifdef MPIPIX
+     call MPI_BCAST(alm2,SIze(alm2),CSP_MPI, 0, MPI_COMM_WORLD, ierr) 
+     if(DebugMsgs>1) print *,code //': Got alm ',H%MpiId, GeteTime() - StartTime
+#endif
+     allocate(map2N(nmaps),map2S(nmaps))  !Give all temporary map slices
+      do map_ix=1,nmaps
+        allocate(map2N(map_ix)%M(H%North_Start(H%MpiId):H%North_Start(H%MpiId)+H%North_Size(H%MpiId)-1,1))
+        allocate(map2S(map_ix)%M(H%South_Start(H%MpiId):H%South_Start(H%MpiId)+H%South_Size(H%MpiId)-1,1))
+       end do
 
+    allocate(b_n(nmaps), b_s(nmaps), factor(nmaps), factor2(nmaps)) 
+    allocate(b_north(0:H%lmax,1:nmaps) ,b_south(0:H%lmax,1:nmaps) )
     call HealpixInitRecfac(H,nlmax)
-
-    nalms = ((nlmax+1)*(nlmax+2))/2
-    
-    allocate(outalm%alms(nmaps,nalms), stat=status)
-    if (status /= 0) call die_alloc(code,'alm2')
-    alm2 => outalm%alms   
-  
-    alm2 = 0
-
-    istart_north = 0
-    istart_south = 12*nsmax**2
-
-    omega_pix = pi / (3.0_dp * nsmax * nsmax)
-
+ 
     dth1 = 1.0_dp / (3.0_dp*DBLE(nsmax)**2)
     dth2 = 2.0_dp / (3.0_dp*DBLE(nsmax))
     dst1 = 1.0_dp / (SQRT(6.0_dp) * DBLE(nsmax) )
 
-    !-----------------------------------------------------------------------
-    !           computes the integral in phi : phas_m(theta)
-    !           for each parallele from north to south pole
-    !-----------------------------------------------------------------------
-    do ith = 1, 2*nsmax
+    do ith =H%ith_start(H%MpiId), H%ith_end(H%MpiId)  
+       !        cos(theta) in the pixelisation scheme
 
-       phas_n = 0._dp 
-       phas_s = 0._dp
-       
-       if (ith .le. nsmax-1) then      ! north polar cap
-          nph = 4*ith
-          kphi0 = 1 
+       if (ith.lt.nsmax) then  ! polar cap (north)
           cth = 1.0_dp  - DBLE(ith)**2 * dth1
+          nph = 4*ith
+          kphi0 = 1
           sth = SIN( 2.0_dp * ASIN( ith * dst1 ) ) ! sin(theta)
-       else                            ! tropical band + equat.
+       else                   ! tropical band (north) + equator
+          cth = DBLE(2*nsmax-ith) * dth2
           nph = 4*nsmax
           kphi0 = MOD(ith+1-nsmax,2)
-          cth = DBLE(2*nsmax-ith) * dth2
           sth = DSQRT((1.0_dp-cth)*(1.0_dp+cth)) ! sin(theta)
        endif
+       !        -----------------------------------------------------
+       !        for each theta, and each m, computes
+       !        b(m,theta) = sum_over_l>m (lambda_l_m(theta) * a_l_m) 
+       !        ------------------------------------------------------
+       !        lambda_mm tends to go down when m increases (risk of underflow)
+       !        lambda_lm tends to go up   when l increases (risk of overflow)
 
        mmax_ring = get_mmax(nlmax,sth) 
 
-       do map_ix = 1, nmaps
-         ring(0:nph-1) = maps(map_ix)%M(istart_north:istart_north+nph-1,1)* H%w8ring_TQU(ith,1)
-         call spinring_analysis(H,nlmax, ring, nph, phas_n(:,map_ix), kphi0, mmax_ring)
-       end do
-       istart_north = istart_north + nph
-       istart_south = istart_south - nph
+       lam_mm = sq4pi_inv ! lambda_00
+       scalem=1
+       a_ix = 0
+       do m = 0, mmax_ring
+          f2m = 2.0_dp * m
 
-      if (ith .lt. 2*nsmax) then
-        do map_ix = 1, nmaps
-          ring(0:nph-1) = maps(map_ix)%M(istart_south:istart_south+nph-1,1) * H%w8ring_TQU(ith,1)
-          call spinring_analysis(H,nlmax, ring, nph, phas_s(:,map_ix), kphi0,mmax_ring)
-        end do
+          !           ---------- l = m ----------
+!          par_lm = 1  ! = (-1)^(l+m)
+          if (m >= 1) then ! lambda_0_0 for m>0
+             lam_mm = -lam_mm*sth*dsqrt((f2m+1.0_dp)/f2m)
+          endif
+          if (abs(lam_mm).lt.UNFLOW) then
+             lam_mm=lam_mm*OVFLOW
+             scalem=scalem-1
+          endif
+          corfac = ScaleFactor(scalem)*lam_mm/OVFLOW
+  
+          lam_lm = corfac
+          a_ix = a_ix + 1
+          b_n = lam_lm * alm2(:,a_ix)
+          b_s = b_n
+
+          !           ---------- l > m ----------
+          lam_0 = 0.0_dp
+          lam_1 = 1.0_dp 
+          scalel=0
+          a_rec = H%recfac(a_ix)
+          lam_2 = cth * lam_1 * a_rec
+
+          do l = m+1, nlmax-1, 2
+             
+            a_ix = a_ix+1
+
+            lam_0 = lam_1 / a_rec
+            lam_1 = lam_2
+    
+            a_rec = H%recfac(a_ix)
+            lam_2 = (cth * lam_1 - lam_0) * a_rec
+            
+            factor = (lam_1*corfac) * alm2(:,a_ix)
+            factor2 = (lam_2*corfac) * alm2(:,a_ix+1)
+
+            b_n = b_n + factor + factor2
+            b_s = b_s - factor + factor2
+            
+            lam_0 = lam_1 / a_rec
+            lam_1 = lam_2
+            a_ix = a_ix+1
+            a_rec = H%recfac(a_ix)
+            lam_2 = (cth * lam_1 - lam_0) * a_rec
+           
+             if (abs(lam_1+lam_2) > OVFLOW) then
+                lam_0=lam_0/OVFLOW
+                lam_1=lam_1/OVFLOW
+                lam_2 = (cth * lam_1 - lam_0) * a_rec
+                scalel=scalel+1
+                corfac = ScaleFactor(scalem+scalel)*lam_mm/OVFLOW
+             elseif (abs(lam_1+lam_2) < UNFLOW) then
+                lam_0=lam_0*OVFLOW
+                lam_1=lam_1*OVFLOW
+                lam_2 = (cth * lam_1 - lam_0) * a_rec 
+                scalel=scalel-1
+                corfac = ScaleFactor(scalem+scalel)*lam_mm/OVFLOW
+             endif
+          enddo
+          if (mod(nlmax-m,2)==1) then
+                 a_ix = a_ix+1
+                 b_n = b_n + corfac*lam_2*alm2(:,a_ix)
+                 b_s = b_s - corfac*lam_2*alm2(:,a_ix)
+          end if
+
+          b_north(m,:) = b_n
+          b_south(m,:) = b_s
+
+       enddo
+
+       do map_ix=1,nmaps 
+       call spinring_synthesis(H,nlmax,b_north(0,map_ix),nph,ring,kphi0,mmax_ring)   ! north hemisph. + equator
+       map2N(map_ix)%M(H%istart_north(ith-1):H%istart_north(ith-1)+nph-1,1) = ring(0:nph-1)
+       
+       if (ith < 2*nsmax) then
+          call spinring_synthesis(H,nlmax,b_south(0,map_ix),nph,ring,kphi0,mmax_ring) ! south hemisph. w/o equat
+          map2S(map_ix)%M(H%istart_south(ith):H%istart_south(ith)+nph-1,1) = ring(0:nph-1)
        endif
- 
- 
-       !-----------------------------------------------------------------------
-       !              computes the a_lm by integrating over theta
-       !                  lambda_lm(theta) * phas_m(theta)
-       !                         for each m and l
-       !-----------------------------------------------------------------------
+       end do
 
-          lam_mm = sq4pi_inv * omega_pix ! lambda_00 * norm
-          scalem=1 
-          a_ix = 0
-          do m = 0, mmax_ring
-             f2m = 2.0_dp * m
-         
-             !           ---------- l = m ----------
-             if (m .ge. 1) then ! lambda_0_0 for m>0
-                lam_mm = -lam_mm*sth*dsqrt((f2m+1.0_dp)/f2m)
-             endif
+    enddo    ! loop on cos(theta)
 
-             if (abs(lam_mm).lt.UNFLOW) then
-                lam_mm=lam_mm*OVFLOW
-                scalem=scalem-1
-             endif
-             corfac = ScaleFactor(scalem)*lam_mm/OVFLOW
-             
-             phas_p=phas_n(m,:) + phas_s(m,:)
-             phas_m=phas_n(m,:) - phas_s(m,:)
-             
-             a_ix = a_ix + 1
-             alm2(:,a_ix) = alm2(:,a_ix) + corfac * phas_p
-             !           ---------- l > m ----------
-             lam_0 = 0.0_dp
-             lam_1 = 1.0_dp
-             scalel=0
-             a_rec = H%recfac(a_ix)
-             lam_2 = cth * lam_1 * a_rec
+    !     --------------------
+    !     free memory and exit
+    !     --------------------
+    deallocate(b_n, b_s, factor, factor2) 
+    deallocate(b_north,b_south) 
 
-             lmin = l_min_ylm(m, sth)
-             do l = m+1, nlmax-1, 2
-   
-                a_ix = a_ix+1
+    call healpixFreeRecFac(H)
+    if (H%MpiID/=0) then
+     deallocate(alm2)
+    else
+      if (dofree) deallocate(alms%alms)
+    end if
+#ifdef MPIPIX
+    if(DebugMsgs>1) print *,code //' Gather ',H%MpiId
+    
+    StartTime = Getetime()
+    do map_ix=1,nmaps
+     if (H%MpiID==0) then
+         allocate(maps(map_ix)%M(0:H%npix,1))
+     else
+        maps(map_ix)%M => map2N(map_ix)%M
+     end if
+      call MPI_GATHERV(map2N(map_ix)%M(H%North_Start(H%MpiId),1),H%North_Size(H%MpiId),SP_MPI, &
+       maps(map_ix)%M,H%North_Size,H%North_Start,SP_MPI, 0 ,MPI_COMM_WORLD, ierr)
+     call MPI_GATHERV(map2S(map_ix)%M(H%South_Start(H%MpiId),1),H%South_Size(H%MpiId),SP_MPI, &
+       maps(map_ix)%M,H%South_Size,H%South_Start,SP_MPI, 0 ,MPI_COMM_WORLD, ierr) 
+     deallocate(map2N(map_ix)%M,map2S(map_ix)%M)
+    end do
+    if (DebugMsgs>1) print *,code //' Done Gather ',H%MpiId, Getetime()-StartTime
+    if (DebugMsgs>0 .and. H%MpiId==0) print *,code //' Time :', GeteTime()-IniTime
+    
 
-                lam_0 = lam_1 / a_rec
-                lam_1 = lam_2
-      
-                a_rec = H%recfac(a_ix)
-                lam_2 = (cth * lam_1 - lam_0) * a_rec
-      
-                if (l >= lmin) then
-                 alm2(:,a_ix) = alm2(:,a_ix) + (lam_1*corfac) * phas_m
-                 alm2(:,a_ix+1) = alm2(:,a_ix+1) + (lam_2*corfac) * phas_p
-                end if
-
-                lam_0 = lam_1 / a_rec
-                lam_1 = lam_2
-                a_ix = a_ix+1
-                a_rec = H%recfac(a_ix)
-                lam_2 = (cth * lam_1 - lam_0) * a_rec
-
-                if (abs(lam_1+lam_2) .gt. OVFLOW) then
-                   lam_0=lam_0/OVFLOW
-                   lam_1=lam_1/OVFLOW
-                   lam_2 = (cth * lam_1 - lam_0) * a_rec
-                   scalel=scalel+1
-                   corfac = ScaleFactor(scalem+scalel)*lam_mm/OVFLOW
-                elseif (abs(lam_1+lam_2) .lt. UNFLOW) then
-                   lam_0=lam_0*OVFLOW
-                   lam_1=lam_1*OVFLOW
-                   lam_2 = (cth * lam_1 - lam_0) * a_rec 
-                   scalel=scalel-1
-                   corfac = ScaleFactor(scalem+scalel)*lam_mm/OVFLOW
-                endif
-             enddo ! loop on l
-             if (mod(nlmax-m,2)==1) then
-                a_ix = a_ix+1
-                alm2(:,a_ix) = alm2(:,a_ix) + (lam_2*corfac) * phas_m
-             end if
-          enddo ! loop on m
-    enddo ! loop on theta
-
-
-    DEALLOCATE(phas_n, phas_s)
-    DEALLOCATE(phas_p, phas_m)
-    DEALLOCATE(ring)
-    call HealpixFreeRecFac(H)
-
-  END subroutine maparray2packedscalalms1
+#endif
+  end subroutine packedscalalms2maparray
 
 
   subroutine maparray2packedpolalms(h, inlmax, maps,outTEB, in_nmap, dofree)
@@ -3206,8 +3252,9 @@ contains
     complex(dpc), dimension(:), allocatable  :: Iphas_Qp,Iphas_Qm,Iphas_UM,Iphas_Up
     
 
-    integer(i4b) mmax_ring, status, par_lm, a_ix
-    integer map_ix, nalms, lmin
+    integer(i4b) mmax_ring, status, par_lm
+    integer map_ix, lmin
+    INTEGER(I_NPIX) :: nalms,a_ix 
     real(dp), dimension(:), allocatable :: lam_fact
     real(dp), dimension(:),   allocatable :: ring
     real(dp), dimension(:),   allocatable :: normal_l
@@ -3277,7 +3324,7 @@ contains
     map2S => maps
 #endif
 
-    nalms = ((nlmax+1)*(nlmax+2))/2   
+   nalms = lmax2nalms(nlmax)  
 
     allocate(lam_fact(nalms),stat = status)    
     if (status /= 0) call die_alloc(code,'lam_fact')
@@ -3631,8 +3678,8 @@ contains
     INTEGER(I4B) :: nsmax
     INTEGER(I4B), INTENT(IN) :: inlmax
     COMPLEX(SPC), INTENT(IN),  DIMENSION(:,:,:) :: alm
-    REAL(SP),     INTENT(OUT), DIMENSION(0:12*H%nside**2-1), target :: map
-    COMPLEX(SPC), INTENT(IN), DIMENSION(0:12*H%nside**2-1), target :: grad_phi_map
+    REAL(SP),     INTENT(OUT), DIMENSION(0:H%npix-1), target :: map
+    COMPLEX(SPC), INTENT(IN), DIMENSION(0:H%npix-1), target :: grad_phi_map
     REAL(SP),     DIMENSION(:), pointer :: map2
 
     COMPLEX(SPC),  DIMENSION(:), pointer :: grad_phi
@@ -3647,7 +3694,9 @@ contains
 
     CHARACTER(LEN=*), PARAMETER :: code = 'SCALALM2LENSEDMAP'
     INTEGER(I4B) :: mmax_ring 
-    integer nalms, ring_ix
+    integer ring_ix
+    INTEGER(I_NPIX) :: nalms 
+
 #ifdef MPIPIX    
     double precision Initime
     integer status
@@ -3667,13 +3716,13 @@ contains
     call SyncInts(nlmax)
 
 #endif
-     nalms = ((nlmax+1)*(nlmax+2))/2   
+     nalms = lmax2nalms(nlmax)  
      allocate(alm2(nalms))
      if (H%MpiId==0) then
        call Alm2PackAlm(alm,alm2,nlmax)
        grad_phi => grad_phi_map
      else
-       allocate(grad_phi(0:12*H%nside**2-1))    
+       allocate(grad_phi(0:H%npix-1))    
      end if
 
     
@@ -3682,7 +3731,7 @@ contains
      call MPI_BCAST(grad_phi,SIze(grad_phi),CSP_MPI, 0, MPI_COMM_WORLD, ierr) 
 
      if(DebugMsgs>1) print *,code //': Got alm ',H%MpiId, GeteTime() - StartTime
-     allocate(map2(0:12*nsmax**2-1), stat = status)    
+     allocate(map2(0:nside2npix(nsmax)-1), stat = status)    
      if (status /= 0) call die_alloc(code,'map2')
 #else
      map2 => map 
@@ -3797,11 +3846,11 @@ contains
     INTEGER(I4B), INTENT(IN) :: inlmax
     integer nsmax
     COMPLEX(SPC), INTENT(IN),  DIMENSION(:,:,:) :: alm_TEB
-    REAL(SP), INTENT(OUT), DIMENSION(0:12*H%nside**2-1,3), target :: map_TQU
+    REAL(SP), INTENT(OUT), DIMENSION(0:H%npix-1,3), target :: map_TQU
     COMPLEX(SPC), DIMENSION(:,:), allocatable :: TEB
 
     REAL(SP),     DIMENSION(:,:), pointer :: map2
-    COMPLEX(SPC), INTENT(IN), DIMENSION(0:12*H%nside**2-1), target :: grad_phi_map
+    COMPLEX(SPC), INTENT(IN), DIMENSION(0:H%npix-1), target :: grad_phi_map
 
     COMPLEX(SPC),  DIMENSION(:), pointer :: grad_phi
 
@@ -3826,7 +3875,9 @@ contains
 
     REAL(DP), DIMENSION(:), ALLOCATABLE :: lam_fact
     REAL(DP), DIMENSION(:),   ALLOCATABLE :: normal_l
-    integer a_ix, nalms, lmin
+    integer lmin
+    INTEGER(I_NPIX) :: nalms,a_ix 
+
 #ifdef MPIPIX
     double precision Initime
     integer i
@@ -3849,20 +3900,20 @@ contains
     call SyncInts(nlmax)
 #endif
 
-     nalms = ((nlmax+1)*(nlmax+2))/2   
+     nalms = lmax2nalms(nlmax)  
      allocate(TEB(3,nalms))
      if (H%MpiId==0) then
         call TEB2PackTEB(alm_TEB,TEB,nlmax)
        grad_phi => grad_phi_map
      else
-        allocate(grad_phi(0:12*H%nside**2-1))    
+        allocate(grad_phi(0:H%npix-1))    
      end if
 
 #ifdef MPIPIX
      call MPI_BCAST(TEB,SIze(TEB),CSP_MPI, 0, MPI_COMM_WORLD, ierr) 
      call MPI_BCAST(grad_phi,SIze(grad_phi),CSP_MPI, 0, MPI_COMM_WORLD, ierr) 
      if(DebugMsgs>1) print *,code //': Got alm ',H%MpiId, GeteTime() - StartTime
-     allocate(map2(0:12*nsmax**2-1,3), stat = status)    
+     allocate(map2(0:nside2npix(nsmax)-1,3), stat = status)    
      if (status /= 0) call die_alloc(code,'map2')
 #else
      map2 => map_TQU 
@@ -4301,8 +4352,8 @@ contains
     integer nsmax
     integer  :: nside_fac = 8
     COMPLEX(SPC), INTENT(IN),  DIMENSION(:,:,:) :: alm
-    COMPLEX(SPC), INTENT(IN), DIMENSION(0:12*H%nside**2-1), target :: grad_phi_map
-    REAL(SP), INTENT(OUT), DIMENSION(0:12*H%nside**2-1), target :: map
+    COMPLEX(SPC), INTENT(IN), DIMENSION(0:H%npix-1), target :: grad_phi_map
+    REAL(SP), INTENT(OUT), DIMENSION(0:H%npix-1), target :: map
     REAL(SP), DIMENSION(:), pointer :: map2N, map2S
     REAL(SP), DIMENSION(:), pointer :: high_resN,high_resS
     COMPLEX(SPC),  DIMENSION(:), pointer :: grad_phi
@@ -4322,10 +4373,11 @@ contains
     INTEGER(I4B) :: mmax_ring,status,par_lm, nlmax
     
     REAL(SP), DIMENSION(:), allocatable ::  ring
-    integer(I4B) a_ix, nalms, border_inc, high_th_start,high_th_end, high_nside
+    integer(I4B) border_inc, high_th_start,high_th_end, high_nside
     integer(I8B) ipix, ring_ix, resN_start, resS_start
     REAL(DP) :: grad_len, sinc_grad_len, phi 
     REAL(DP) :: cth0, sth0 
+   INTEGER(I_NPIX) :: nalms,a_ix 
 #ifdef MPIPIX    
     double precision Initime
 #endif      !=======================================================================
@@ -4356,7 +4408,7 @@ contains
 
     call SyncInts(nlmax,nside_fac,border_inc)
 
-    nalms = ((nlmax+1)*(nlmax+2))/2   
+    nalms = lmax2nalms(nlmax)  
     allocate(alm2(nalms))
     if (H%MpiId==0) call Alm2PackAlm(alm,alm2,nlmax)
     
@@ -4519,7 +4571,7 @@ contains
      if (H%MpiId==0) then
        grad_phi => grad_phi_map
      else
-        allocate(grad_phi(0:12*H%nside**2-1))    
+        allocate(grad_phi(0:H%npix-1))    
         grad_phi = 0
      end if
 #ifdef MPIPIX
@@ -4647,8 +4699,8 @@ contains
     integer nsmax
     integer  :: nside_fac = 8
     COMPLEX(SPC), INTENT(IN),  DIMENSION(:,:,:) :: alm_TEB
-    COMPLEX(SPC), INTENT(IN), DIMENSION(0:12*H%nside**2-1), target :: grad_phi_map
-    REAL(SP), INTENT(OUT), DIMENSION(0:12*H%nside**2-1,3), target :: map_TQU
+    COMPLEX(SPC), INTENT(IN), DIMENSION(0:H%npix-1), target :: grad_phi_map
+    REAL(SP), INTENT(OUT), DIMENSION(0:H%npix-1,3), target :: map_TQU
     REAL(SP), DIMENSION(:,:), pointer :: map2N, map2S
     REAL(SP), DIMENSION(:,:), pointer :: high_resN,high_resS
     COMPLEX(SPC),  DIMENSION(:), pointer :: grad_phi
@@ -4676,11 +4728,13 @@ contains
     REAL(DP), DIMENSION(:), ALLOCATABLE :: lam_fact
     REAL(SP), DIMENSION(:), allocatable ::  ring
     REAL(DP), DIMENSION(:),   ALLOCATABLE :: normal_l
-    integer(I4B) a_ix, nalms, border_inc, high_th_start,high_th_end, high_nside
+    integer(I4B) border_inc, high_th_start,high_th_end, high_nside
     integer(I8B) ipix, ring_ix, resN_start, resS_start
     COMPLEX(DPC) :: gammfac
     REAL(DP) :: grad_len, sinc_grad_len, phi, gamma  
     REAL(DP) :: Re, Im, cth0, sth0 
+    INTEGER(I_NPIX) :: nalms,a_ix 
+
 #ifdef MPIPIX
     double precision Initime
     integer i
@@ -4712,7 +4766,7 @@ contains
     end if
 
      call SyncInts(nlmax,nside_fac,border_inc)
-     nalms = ((nlmax+1)*(nlmax+2))/2   
+     nalms = lmax2nalms(nlmax)  
      allocate(TEB(3,nalms))
      if (H%MpiId==0) then
         call TEB2PackTEB(alm_TEB,TEB,nlmax)
@@ -4959,7 +5013,7 @@ contains
      if (H%MpiId==0) then
        grad_phi => grad_phi_map
      else
-        allocate(grad_phi(0:12*H%nside**2-1))    
+        allocate(grad_phi(0:H%npix-1))    
         grad_phi = 0
      end if
 #ifdef MPIPIX
@@ -5111,7 +5165,7 @@ contains
      use MPIstuff
      Type (HealpixInfo) :: H  
      Type (LensGradients) :: Grad
-     COMPLEX(SPC), INTENT(IN), DIMENSION(0:12*H%nside**2-1), target :: grad_phi_map
+     COMPLEX(SPC), INTENT(IN), DIMENSION(0:H%npix-1), target :: grad_phi_map
      real, intent(in) :: nside_fac
      integer, intent(out) :: n_phi_cyl, high_nside
      integer, intent(out) :: cyl_start_ix, cyl_end_ix
@@ -5223,8 +5277,8 @@ contains
     integer nsmax
     real  :: nside_fac = 3.
     COMPLEX(SPC), INTENT(IN),  DIMENSION(:,:,:) :: alm
-    COMPLEX(SPC), INTENT(IN), DIMENSION(0:12*H%nside**2-1), target :: grad_phi_map
-    REAL(SP), INTENT(OUT), DIMENSION(0:12*H%nside**2-1), target :: map
+    COMPLEX(SPC), INTENT(IN), DIMENSION(0:H%npix-1), target :: grad_phi_map
+    REAL(SP), INTENT(OUT), DIMENSION(0:H%npix-1), target :: map
     REAL(SP), DIMENSION(:), pointer :: map2N, map2S
     
     Type (LensGradients) :: grad
@@ -5254,8 +5308,9 @@ contains
     REAL(SP), DIMENSION(:), allocatable ::  ring, theta_vals, &
            phi_vals,theta_lensed_vals,phi_lensed_vals
 
-    integer(I4B) a_ix, nalms, high_nside
+    integer(I4B) high_nside
     integer(I8B) ring_ix 
+    INTEGER(I_NPIX) :: nalms,a_ix 
     REAL(DP) :: grad_len, sinc_grad_len, phi
     REAL(DP) :: cth0, sth0
     
@@ -5286,7 +5341,7 @@ contains
     call SyncReals(nside_fac)
 #endif
  
-     nalms = ((nlmax+1)*(nlmax+2))/2   
+     nalms = lmax2nalms(nlmax)  
      allocate(alm2(nalms))
      if (H%MpiId==0) call Alm2PackAlm(alm,alm2,nlmax)
     
@@ -5629,8 +5684,8 @@ contains
     integer nsmax   
     real  :: nside_fac = 3.
     COMPLEX(SPC), INTENT(IN),  DIMENSION(:,:,:) :: alm_TEB
-    COMPLEX(SPC), INTENT(IN), DIMENSION(0:12*H%nside**2-1), target :: grad_phi_map
-    REAL(SP), INTENT(OUT), DIMENSION(0:12*H%nside**2-1,3), target :: map_TQU
+    COMPLEX(SPC), INTENT(IN), DIMENSION(0:H%npix-1), target :: grad_phi_map
+    REAL(SP), INTENT(OUT), DIMENSION(0:H%npix-1,3), target :: map_TQU
     REAL(SP), DIMENSION(:,:), pointer :: map2N, map2S
 
     Type (LensGradients) :: grad
@@ -5673,7 +5728,8 @@ contains
     REAL(DP), DIMENSION(:),   ALLOCATABLE :: normal_l
     real(dp), dimension(:), allocatable :: twocthlm1, lfac
    
-    integer(I4B) a_ix, nalms, high_nside, interpW
+    integer(I4B) high_nside, interpW
+    INTEGER(I_NPIX) :: nalms,a_ix 
     integer(I8B) ring_ix 
     COMPLEX(DPC) :: gammfac
     REAL(DP) :: grad_len, sinc_grad_len, phi, gamma 
@@ -5703,7 +5759,7 @@ contains
     call SyncReals(nside_fac)
 #endif
 
-     nalms = ((nlmax+1)*(nlmax+2))/2   
+     nalms = lmax2nalms(nlmax)  
      allocate(TEB(3,nalms))
      if (H%MpiId==0) then
         call TEB2PackTEB(alm_TEB,TEB,nlmax)
@@ -6148,8 +6204,8 @@ contains
     INTEGER(I4B), INTENT(IN) :: inlmax 
     integer nsmax
     COMPLEX(SPC), INTENT(IN),  DIMENSION(:,:,:)  :: alm
-    REAL(SPC), INTENT(OUT), DIMENSION(0:12*H%nside**2-1), target :: map_T
-    COMPLEX(SPC), INTENT(IN), DIMENSION(0:12*H%nside**2-1), target :: grad_phi_map
+    REAL(SPC), INTENT(OUT), DIMENSION(0:H%npix-1), target :: map_T
+    COMPLEX(SPC), INTENT(IN), DIMENSION(0:H%npix-1), target :: grad_phi_map
     REAL(SPC), DIMENSION(:), pointer :: map2
     COMPLEX(SPC),  DIMENSION(:), pointer :: grad_phi
     COMPLEX(SPC), DIMENSION(:), allocatable :: alm2
@@ -6182,11 +6238,13 @@ contains
 
     REAL(DP) :: LastX(4),LastW(4),W(4),X(4)
     
-    INTEGER(I4B) :: status,par_lm, a_ix
+    INTEGER(I4B) :: status,par_lm
+    INTEGER(I_NPIX) :: nalms,a_ix 
+
 
     REAL(DP), DIMENSION(:), ALLOCATABLE :: lam_fact
     REAL(SP), DIMENSION(:),   ALLOCATABLE :: ringR, ringI
-    integer NS, mmax_ring, nalms, ix
+    integer NS, mmax_ring, ix
 #ifdef MPIPIX    
     double precision Initime
 #endif      !=======================================================================
@@ -6203,20 +6261,20 @@ contains
     end if
     call SyncInts(nlmax)
 #endif
-     nalms = ((nlmax+1)*(nlmax+2))/2   
+     nalms = lmax2nalms(nlmax)  
      allocate(alm2(nalms),stat = status )
      if (status /= 0) call die_alloc(code,'alm2')
      if (H%MpiId==0) then
        call Alm2PackAlm(alm,alm2,nlmax)
        grad_phi => grad_phi_map
      else
-       allocate(grad_phi(0:12*H%nside**2-1)) 
+       allocate(grad_phi(0:H%npix-1)) 
      end if
 #ifdef MPIPIX
      call MPI_BCAST(alm2,SIze(alm2),CSP_MPI, 0, MPI_COMM_WORLD, ierr) 
      call MPI_BCAST(grad_phi,SIze(grad_phi),CSP_MPI, 0, MPI_COMM_WORLD, ierr) 
      if(DebugMsgs>1) print *,code//' Got alm ',H%MpiId, GeteTime() - StartTime
-     allocate(map2(0:12*nsmax**2-1), stat = status)
+     allocate(map2(0:nside2npix(nsmax)-1), stat = status)
      if (status /= 0) call die_alloc(code,'map2')    
 #else
      map2 => map_T
@@ -6628,7 +6686,7 @@ contains
 !    INTEGER(I4B)  :: nsmax
 !    INTEGER(I4B), INTENT(IN) :: inlmax
 !    COMPLEX(SPC), INTENT(OUT),  DIMENSION(:,:,:) :: alm_TEB
-!    REAL(SP), INTENT(IN), DIMENSION(0:12*H%nside**2-1,3), target :: map_TQU
+!    REAL(SP), INTENT(IN), DIMENSION(0:H%npix-1,3), target :: map_TQU
 !    COMPLEX(SPC), DIMENSION(:,:), allocatable :: TEB
 !    REAL(SP), DIMENSION(:,:), pointer :: map2
 !
@@ -6681,7 +6739,7 @@ contains
 !      call SendMessages(H,code)
 !      map2 => map_TQU
 !    else
-!       allocate(map2(0:12*H%nside**2-1,3),stat = status) 
+!       allocate(map2(0:H%npix-1,3),stat = status) 
 !       if (status /= 0) call die_alloc(code,'map2')   
 !    end if
 !
@@ -6699,7 +6757,7 @@ contains
 !    map2 => map_TQU
 !#endif
 !
-!    nalms = ((nlmax+1)*(nlmax+2))/2   
+!    nalms = lmax2nalms(nlmax)  
 !    ntheta = H%ith_end(H%MpiId)-H%ith_start(H%MpiId)+1
 !
 !    ALLOCATE(lam_fact(nalms),stat = status)    
@@ -7008,7 +7066,7 @@ contains
     integer(i4b)  :: nsmax
     integer(i4b), intent(in) :: inlmax
     complex(spc), intent(out),  dimension(:,:,:) :: alm_TEB
-    real(sp), intent(in), dimension(0:12*h%nside**2-1,3), target :: map_TQU
+    real(sp), intent(in), dimension(0:H%npix-1,3), target :: map_TQU
     complex(spc), dimension(:,:), allocatable :: TEB
     real(sp), dimension(:,:), pointer :: map2S,map2N
 
@@ -7034,8 +7092,9 @@ contains
     complex(dpc) :: Iphas_Qp,Iphas_Qm,Iphas_UM,Iphas_Up
     
 
-    integer(i4b) mmax_ring, status, par_lm, a_ix
-    integer nalms, lmin
+    integer(i4b) mmax_ring, status, par_lm
+    integer lmin
+    INTEGER(I_NPIX) :: nalms,a_ix 
     real(dp), dimension(:), allocatable :: lam_fact
     real(dp), dimension(:),   allocatable :: ring
     real(dp), dimension(:),   allocatable :: normal_l
@@ -7080,7 +7139,7 @@ contains
     map2S => map_TQU
 #endif
 
-    nalms = ((nlmax+1)*(nlmax+2))/2   
+    nalms = lmax2nalms(nlmax)  
 
     allocate(lam_fact(nalms),stat = status)    
     if (status /= 0) call die_alloc(code,'lam_fact')
@@ -7339,7 +7398,7 @@ contains
     INTEGER(I4B), INTENT(IN) :: inlmax
     integer nsmax
     COMPLEX(SPC), INTENT(IN),  DIMENSION(:,:,:) :: alm_TEB
-    REAL(SP), INTENT(OUT), DIMENSION(0:12*H%nside**2-1,3), target :: map_TQU
+    REAL(SP), INTENT(OUT), DIMENSION(0:H%npix-1,3), target :: map_TQU
     COMPLEX(SPC), DIMENSION(:,:), allocatable :: TEB
     REAL(SP), DIMENSION(:,:), pointer :: map2N,map2S
     INTEGER(I4B) :: l, m, ith, scalem, scalel          ! alm related
@@ -7364,7 +7423,7 @@ contains
     REAL(DP), DIMENSION(:), ALLOCATABLE :: lam_fact
     REAL(SP), DIMENSION(0:4*H%nside-1) :: ring
     REAL(DP), DIMENSION(:),   ALLOCATABLE :: normal_l
-    integer a_ix, nalms
+    INTEGER(I_NPIX) :: nalms,a_ix 
 #ifdef MPIPIX
     double precision Initime
     integer i
@@ -7385,7 +7444,7 @@ contains
     end if
      call SyncInts(nlmax)
 #endif
-     nalms = ((nlmax+1)*(nlmax+2))/2   
+     nalms = lmax2nalms(nlmax)  
      allocate(TEB(3,nalms))
      if (H%MpiId==0) call TEB2PackTEB(alm_TEB,TEB,nlmax)
     
@@ -7666,7 +7725,7 @@ contains
     CHARACTER(LEN=*), PARAMETER :: code = 'SCALALM2BISPECTRUM'
     COMPLEX(DPC), allocatable :: b_north(:,:), b_flipped(:)
     INTEGER(I4B) :: mmax_ring !,  par_lm
-    integer nalms, a_ix
+    INTEGER(I_NPIX) :: nalms,a_ix 
     integer L1,L2,L3, min_l, max_l
     real(DP) aring1(0:4*H%nside-1),aring2(0:4*H%nside-1), tmp
     REAL(DP), pointer :: Slice(:,:)
@@ -7693,7 +7752,7 @@ contains
     end if
     call SyncInts(nlmax,L1_Max,lmax_bi)
 #endif
-     nalms = ((nlmax+1)*(nlmax+2))/2   
+     nalms = lmax2nalms(nlmax)  
      allocate(alm2(nalms))
      if (H%MpiId==0) then
       call Alm2PackAlm(alm,alm2,nlmax)
@@ -7897,9 +7956,9 @@ contains
  subroutine PackAlm2Alm(almin,almout, nlmax)
    integer, intent (in) :: nlmax
    COMPLEX(SPC), INTENT(Out), DIMENSION(1:1,0:nlmax,0:nlmax) :: almout
-   COMPLEX(SPC), INTENT(IN), DIMENSION(((nlmax+1)*(nlmax+2))/2) :: almin
-
-   integer a_ix, m, l
+   COMPLEX(SPC), INTENT(IN), DIMENSION((int(nlmax+1,I_NPIX)*(nlmax+2))/2) :: almin
+   integer m, l
+   integer(I_NPIX) a_ix
 
     a_ix = 0
     do m = 0, nlmax
@@ -7914,8 +7973,9 @@ contains
  subroutine Alm2PackAlm(almin,almout, nlmax)
    integer, intent (in) :: nlmax
    COMPLEX(SPC), INTENT(in), DIMENSION(1:1,0:nlmax,0:nlmax) :: almin
-   COMPLEX(SPC), INTENT(out), DIMENSION(((nlmax+1)*(nlmax+2))/2) :: almout
-   integer a_ix, m, l
+   COMPLEX(SPC), INTENT(out), DIMENSION((int(nlmax+1,I_NPIX)*(nlmax+2))/2) :: almout
+   integer m, l
+   integer(I_NPIX) a_ix
 
     a_ix = 0
     do m = 0, nlmax
@@ -7926,14 +7986,59 @@ contains
     end do  
 
  end  subroutine Alm2PackAlm
+ 
+  subroutine Alm2PackAlmFiltered(almin,almout, index, nlmax, filter)
+   integer, intent (in) :: nlmax
+   COMPLEX(SPC), INTENT(in), DIMENSION(1:1,0:nlmax,0:nlmax) :: almin
+   Type(HealpixPackedScalAlms) :: almout
+   real(dp), intent(in) :: filter(0:nlmax)
+   integer index
+   integer m, l
+   integer(I_NPIX) a_ix
 
+    a_ix = 0
+    do m = 0, nlmax
+     do l=m, nlmax
+      a_ix = a_ix + 1
+      almout%alms(index,a_ix) = almin(1,l,m)*filter(l) 
+     end do
+    end do  
+
+  end  subroutine Alm2PackAlmFiltered
+
+   subroutine PackAlm2AlmFiltered(almin,index, almout, nlmax, filter, accumulate_weight)
+   integer, intent (in) :: nlmax
+   COMPLEX(SPC), INTENT(Out), DIMENSION(1:1,0:nlmax,0:nlmax) :: almout
+   Type(HealpixPackedScalAlms), intent(in) :: almin
+   integer index
+   real(dp), intent(in) :: filter(0:nlmax)
+   real(dp), intent(in), optional :: accumulate_weight
+   integer m, l
+   integer(I_NPIX) a_ix
+
+    a_ix = 0
+    do m = 0, nlmax
+     if (.not. present(accumulate_weight)) then
+      do l=m, nlmax
+       a_ix = a_ix + 1
+       almout(1,l,m) = almin%alms(index,a_ix)*filter(l)
+      end do
+     else
+       do l=m, nlmax
+       a_ix = a_ix + 1
+       almout(1,l,m) = almout(1,l,m)+ accumulate_weight*almin%alms(index,a_ix)*filter(l)
+      end do     
+     end if
+    end do  
+
+ end  subroutine PackAlm2AlmFiltered
 
  subroutine PackEB2EB(almin,almout, nlmax)
    integer, intent (in) :: nlmax
    COMPLEX(SPC), INTENT(Out), DIMENSION(1:2,0:nlmax,0:nlmax) :: almout
-   COMPLEX(SPC), INTENT(IN), DIMENSION(1:2,((nlmax+1)*(nlmax+2))/2) :: almin
-
-   integer a_ix, m, l
+   COMPLEX(SPC), INTENT(IN), DIMENSION(1:2,(int(nlmax+1,I_NPIX)*(nlmax+2))/2) :: almin
+   integer m, l
+   integer(I_NPIX) a_ix
 
     a_ix = 0
     do m = 0, nlmax
@@ -7948,8 +8053,9 @@ contains
  subroutine EB2PackEB(almin,almout, nlmax)
    integer, intent (in) :: nlmax
    COMPLEX(SPC), INTENT(in), DIMENSION(1:2,0:nlmax,0:nlmax) :: almin
-   COMPLEX(SPC), INTENT(out), DIMENSION(1:2,((nlmax+1)*(nlmax+2))/2) :: almout
-   integer a_ix, m, l
+   COMPLEX(SPC), INTENT(out), DIMENSION(1:2,(int(nlmax+1,I_NPIX)*(nlmax+2))/2) :: almout
+   integer m, l
+   integer(I_NPIX) a_ix
 
     a_ix = 0
     do m = 0, nlmax
@@ -7965,9 +8071,9 @@ contains
  subroutine TEB2PackTEB(almin,TEBout,nlmax)
    integer, intent (in) :: nlmax
    COMPLEX(SPC), INTENT(in), DIMENSION(1:3,0:nlmax,0:nlmax) :: almin
-   COMPLEX(SPC), INTENT(out), DIMENSION(1:3,((nlmax+1)*(nlmax+2))/2) :: TEBout
-  
-   integer a_ix, m, l
+   COMPLEX(SPC), INTENT(out), DIMENSION(1:3,(int(nlmax+1,I_NPIX)*(nlmax+2))/2) :: TEBout
+   integer m, l
+   integer(I_NPIX) a_ix
 
     a_ix = 0
     do m = 0, nlmax
@@ -7983,10 +8089,10 @@ contains
 subroutine PackTEB2TEB(almin,almout, nlmax)
    integer, intent (in) :: nlmax
    COMPLEX(SPC), INTENT(Out), DIMENSION(1:3,0:nlmax,0:nlmax) :: almout
-   COMPLEX(SPC), INTENT(IN), DIMENSION(1:3,((nlmax+1)*(nlmax+2))/2) :: almin
-
-   integer a_ix, m, l
-
+   COMPLEX(SPC), INTENT(IN), DIMENSION(1:3,(int(nlmax+1,I_NPIX)*(nlmax+2))/2) :: almin
+   integer m, l
+   integer(I_NPIX) a_ix
+   
     a_ix = 0
     do m = 0, nlmax
      do l=m, nlmax
@@ -8077,6 +8183,8 @@ subroutine PackTEB2TEB(almin,almout, nlmax)
           call  maparray2packedpolalms(H,i, dummymaps, dummyalms, 1, .false.)
       else if (Msg=='SCALALM2BISPECTRUM') then
           call  scalalm2bispectrum(H, i, i, i, dummyalm, dummyslice)
+      else if (Msg=='PACKEDSCALALMS2MAPARRAY') then
+          call packedscalalms2maparray(H,i,dummyscalalms,dummymaps,1,.false.) 
       end if
      end do 
    

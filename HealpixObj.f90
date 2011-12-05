@@ -1,5 +1,5 @@
 module HealpixObj
- use healpix_types, ONLY: SP,DP,I4B,SPC
+ use healpix_types, ONLY: SP,DP,I4B,I8B,SPC
  USE head_fits, ONLY : add_card, get_card
  USE pix_tools, ONLY :  npix2nside, nside2npix, query_disc
  USE fitstools, ONLY : getsize_fits, input_map, read_par, read_dbintab, write_asctab, &
@@ -23,8 +23,8 @@ module HealpixObj
  integer, parameter :: nospinmap = 0
 
  type HealpixMap
-
-  integer(I4B) npix, nmaps, ordering, nside, type
+  integer(I_NPIX) npix
+  integer(I4B) nmaps, ordering, nside, type
   REAL(SP), DIMENSION(:,:),   POINTER :: TQU  => NULL() 
   COMPLEX(SP), dimension(:), pointer :: SpinField => NULL() 
 !  REAL(SP), DIMENSION(:), pointer :: SpinQ, SpinU
@@ -129,12 +129,13 @@ contains
 
    
 
-   subroutine HealpixPower_ReadFromTextFile(P, f, lmax, pol, dolens)
+   subroutine HealpixPower_ReadFromTextFile(P, f, lmax, pol, dolens, full_phi_cross)
      use AMLutils
      Type(HealpixPower) P
      character(LEN=*), intent(IN) :: f
      integer, intent(in) :: lmax
-     logical,intent(in), optional :: dolens, pol
+     logical,intent(in), optional :: dolens, pol, full_phi_cross
+     logical full_phi
      integer i,l, ColNum
      real(DP) T,E,B,TE, scal, phi, phiT, phiE
      logical tensors, dolens2, pol2
@@ -153,6 +154,11 @@ contains
      pol2 = .false.
      if (present(pol)) then
         pol2 = pol
+     end if
+     if (present(full_phi_cross)) then
+         full_phi=full_phi_cross
+     else
+         full_phi=.false.
      end if
      call HealpixPower_Init(P, lmax, pol = pol2, dolens = dolens2)
  
@@ -214,7 +220,7 @@ contains
              if (colnum==8) then
              ! lens_potential_output_file from CAMB May 2010+
              P%PhiCl(l,1) = phi  * twopi/real(l*(l+1),dp)**2
-             if (l>300) then 
+             if (l>300 .and. .not. full_phi) then 
               !just kill numerical noise on T and E lensing correlations on small scales             
               P%PhiCl(l,2:3)=0
              else  
@@ -671,7 +677,7 @@ contains
     use pix_tools
     Type(HealpixMap) :: M
     real(dp), intent(in) :: rad, theta, phi
-    integer, intent(in) :: npix
+    integer(I_NPIX), intent(in) :: npix
     real(dp) vec(3)
     
     call ang2vec(theta,phi,vec)
@@ -683,8 +689,8 @@ contains
    !inside disc radius rad centred at vec
     Type(HealpixMap) :: M
     real(dp), intent(in) :: rad
-    integer, intent(in) :: npix
-    integer, dimension(:), allocatable :: listpix
+    integer(I_NPIX), intent(in) :: npix
+    integer(I4B), dimension(:), allocatable :: listpix
     real(dp), intent(in) :: vec(3)
     integer nlist
   
@@ -762,7 +768,7 @@ contains
   subroutine HealpixMap_Pix2Ang(M, pix, theta, phi) 
     use pix_tools
     Type(HealpixMap) :: M
-    integer, intent(in) :: pix
+    integer(I_NPIX), intent(in) :: pix
     real(dp), intent(out):: theta, phi
     
     if (M%Ordering == ord_ring) then
@@ -799,7 +805,7 @@ contains
    use pix_tools
     Type(HealpixMap) :: M, MR
     real(dp), intent(in) :: theta, phi, chi 
-    integer i, ix
+    integer(I_NPIX) i, ix
     real(dp) vec(3), R(3,3)
 
     call MpiStop('Don''t use this')
@@ -851,7 +857,7 @@ contains
   subroutine HealpixMap_GalacticToEcliptic(M)
    !Not at all optimal
     Type(HealpixMap) M, M2
-    integer i
+    integer(I_NPIX) i
     real(dp) theta,phi
     
     call HealpixMap_Assign(M2,M)
@@ -870,7 +876,7 @@ contains
     real(sp), intent(in) :: N_T
     real(sp), intent(in), optional :: N_QU
     real(sp) amp
-    integer i
+    integer(I_NPIX) i
          
     amp = sqrt(N_T*M%npix/(HO_fourpi))
     do i=0, M%npix-1
@@ -893,7 +899,7 @@ contains
   subroutine HealpixMap_AddUncorrelatedNoise(M, NoiseMap)
     use Random
     Type(HealpixMap) :: M, NoiseMap
-    integer i
+    integer(I_NPIX) i
     real var
          
     do i=0, M%npix-1
@@ -1055,19 +1061,19 @@ contains
   subroutine HealpixMap_Init(M, npix, nmaps, nested, spinmap, HasPhi, pol, nside)
 
     Type(HealpixMap) :: M
-    integer, intent(in), optional :: npix, nside 
-    integer, intent(in), optional :: nmaps, spinmap
+    integer(I_NPIX), intent(in), optional :: npix
+    integer, intent(in), optional :: nside, nmaps, spinmap
     logical, intent(in), optional :: nested, HasPhi, pol
     integer status
 
     if (present(npix)) then
      M%npix = npix
      if (present(nside)) then
-      if (M%npix /= 12*nside**2) call MpiStop('HealpixMap_Init: nside and npix specified')
+      if (M%npix /= nside2npix(nside)) call MpiStop('HealpixMap_Init: nside and npix specified')
      end if
     else
      if (present(nside)) then
-      M%npix = 12*nside**2
+      M%npix = nside2npix(nside)
      else
       call MpiStop('HealpixMap_Init: must specifc nside or npix')
      end if  
@@ -1430,7 +1436,7 @@ contains
     Type(HealpixMap), intent(out) :: OutMap
     integer, intent(in), optional :: map_ix
     real(sp), intent(in), optional :: missval
-    integer i, j, ix
+    integer(I_NPIX) i, j, ix
 
    if (present(map_ix)) then
      ix = map_ix
@@ -1618,7 +1624,7 @@ contains
      Type(HealpixMap) :: M
      Type(HealpixAlm), intent(in) :: A
      Type(HealpixAlm) :: AT
-     integer, intent(in) :: npix
+     integer(I_NPIX), intent(in) :: npix
      character(LEN=*), intent(in) :: What
    
     call HealpixMap_Init(M,npix,nmaps = 0, spinmap = 1)
@@ -1639,7 +1645,7 @@ contains
   subroutine  HealpixExactLensedMap(H,A, M, npix)
      Type (HealpixInfo) :: H
      Type(HealpixMap) :: GradPhi, M
-     integer, intent(in) :: npix
+     integer(I_NPIX), intent(in) :: npix
      Type(HealpixAlm), intent(in) :: A
       
      call HealpixAlm2GradientMap(H,A,GradPhi,npix,'PHI')
@@ -1665,7 +1671,7 @@ contains
   subroutine  HealpixInterpLensedMap(H,A, M, npix, factor, interp_method)
      Type (HealpixInfo) :: H
      Type(HealpixMap) :: GradPhi, M
-     integer, intent(in) :: npix
+     integer(I_NPIX), intent(in) :: npix
      Type(HealpixAlm), intent(in) :: A
      real, intent(in), optional :: factor
      integer, intent(in), optional :: interp_method
@@ -1716,7 +1722,7 @@ contains
    ! ** Note does not give sky with accurate lensed C_l at l>~1200 **
      Type (HealpixInfo) :: H
      Type(HealpixMap) :: GradPhi, M
-     integer, intent(in) :: npix
+     integer(I_NPIX), intent(in) :: npix
      Type(HealpixAlm), intent(in) :: A
       
      call HealpixAlm2GradientMap(H,A,GradPhi,npix,'PHI')
@@ -1746,7 +1752,7 @@ contains
      Type (HealpixInfo) :: H
      Type(HealpixMap) :: M
      Type(HealpixAlm), intent(in) :: A
-     integer, intent(in) :: npix
+     integer(I_NPIX), intent(in) :: npix
      logical, intent(in), optional :: DoPhi, DoT
      logical Phi
      integer npol
@@ -1893,7 +1899,7 @@ contains
   subroutine HealpixMap_HaarTransform(M,Mdegrade,Mdetail)
    implicit none
    Type(HealpixMap) :: M, Mdegrade, Mdetail
-   integer i, j
+   integer(I_NPIX) i, j
    real :: bas1(4) = (/ -1, -1,  1,  1 /) /4.
   ! real :: bas2(4) = (/ -1,  1,  0,  0 /) /2.
   ! real :: bas3(4) = (/  0,  0, -1,  1 /) /2.
@@ -1921,7 +1927,7 @@ contains
 
   subroutine HealpixMap_HaarReconstruct(Mdegrade, Mdetail, M)
      Type(HealpixMap) :: M, Mdegrade, Mdetail
-   integer i, j
+   integer(I_NPIX) i, j
    real :: bas1(4) = (/ -1, -1,  1,  1 /) 
 !   real :: bas2(4) = (/ -1,  1,  0,  0 /) 
 !   real :: bas3(4) = (/  0,  0, -1,  1 /) 
@@ -2000,7 +2006,7 @@ contains
    Type(HaarComponents) :: C
    Type(HealpixMap) :: M
    integer, intent(in) :: nside_power, nside_map
-   integer i, fac, j, pixcount
+   integer(I_NPIX) i, fac, j, pixcount
   
 
    if (C%degraded%nmaps /= 1) call MpiStop('Only does power spectra for single map')
@@ -2061,5 +2067,80 @@ contains
     if (dofree) deallocate(CrossPowers%Ps)
 
  end subroutine CrossPowersToHealpixPowerArray
+ 
+ 
+ subroutine HealpixMap_MakeSeparableNGfromG(H, NonGaussAlms, GaussAlms, P, nterms, weights, &
+           alpha, beta, lmin_in, lmax_in, max_mem_maps)
+  !e.g. Local non-Gauss map simulation method from appendix of arXiv:0905.4732
+  !Takes in GaussAlms and produces quadratic NonGaussAlms so that a_lms with fnl would be
+  !  GaussAlms + 3/5 * fnl *NonGaussAlms 
+  ! (assuming 3/5 and fnl not put into your definition of the weights)
+  !
+  !Calculates sum_i weights[i] x alpha_l[i] x int Ylm^* B[i]^2
+  !  where B[i] = sum_{lm} beta_l[i] GaussAlm_{lm}/ C_l
+  !Currently only temperature. Using CAMB's alpha and beta, a choice selection of about 50 points
+  !around recombination seems to be enough for good accuracy to Lmax=2000
+     Type (HealpixInfo) :: H
+     Type(HealpixAlm), intent(in) :: GaussAlms
+     Type(HealpixAlm) NonGaussAlms
+     Type(HealpixPower), intent(in) :: P
+     integer, intent(in) :: nterms, lmin_in, lmax_in, max_mem_maps
+     real(dp) weights(nterms)
+     real(dp) alpha(nterms, lmin_in:lmax_in), beta(nterms, lmin_in:lmax_in)
+     integer term
+     Type(HealpixPackedScalAlms) :: alms
+     Type (HealpixMapArray), allocatable :: maps(:)
+     integer nalms, nlmax, lmin, lmaxfilter, chunk, maxalm, chunksize, thisterm
+     real(dp), allocatable :: filter(:)
+     
+     nlmax = GaussAlms%lmax;
+     nalms = lmax2nalms(nlmax)
+     if (P%lmax < nlmax) call MpiStop('HealpixMap_MakeSeparableNGfromG: C_l lmax mismatch')
+     
+     lmin = lmin_in
+     lmaxfilter=min(lmax_in,nlmax)
+     if (P%Cl(1,1)==0.) lmin=max(2,lmin)
+     
+     maxalm=max_mem_maps !depends on available memory
+     call HealpixAlm_Init(NonGaussAlms,nlmax,1)
+ 
+     allocate(filter(0:nlmax))
 
+     do chunk=1, (nterms+maxalm-1)/maxalm
+         if (chunk < (nterms+maxalm-1)/maxalm) then
+              chunksize = maxalm
+         else
+             chunksize = nterms - (chunk-1)*maxalm 
+         end if    
+         !print *,'doing chunk', chunk, ' of ', (nterms+maxalm-1)/maxalm, ', size:', chunksize
+         allocate(maps(chunksize))
+         allocate(alms%alms(chunksize,nalms))
+         do term=1, chunksize
+             thisterm = (chunk-1)*maxalm + term 
+             filter=0
+             filter(lmin:lmaxfilter)=beta(thisterm,lmin:lmaxfilter)/P%Cl(lmin:lmaxfilter,1)
+             call Alm2PackAlmFiltered(GaussAlms%TEB,alms,term, nlmax, filter)
+         end do
+  
+         call packedscalalms2maparray(H, nlmax, alms, maps, chunksize, .true.)
+         do term=1,chunksize
+           maps(term)%M=maps(term)%M**2
+         end do
+         call maparray2packedscalalms(H, nlmax, maps, alms, chunksize, .true.)
+
+         do term=1,chunksize
+             thisterm = (chunk-1)*maxalm + term 
+             filter=0
+             filter(lmin:lmaxfilter)=alpha(thisterm,lmin:lmaxfilter)
+             call PackAlm2AlmFiltered(alms,term, NonGaussAlms%TEB, nlmax, filter, weights(thisterm))
+         end do
+         deallocate(alms%alms)           
+         deallocate(maps)    
+     
+     end do !chunks
+     deallocate(filter)
+     
+ end subroutine HealpixMap_MakeSeparableNGfromG
+
+ 
 end module HealpixObj

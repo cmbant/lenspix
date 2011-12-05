@@ -13,7 +13,8 @@ program SimLensCMB
  Type(HealpixPower) :: P
  Type(HealpixAlm)   :: A
  
- integer            :: nside, lmax, npix
+ integer            :: nside, lmax
+ integer(I_NPIX)    :: npix
  character(LEN=256)  :: w8name = '../Healpix_2.00/data/'
  character(LEN=256)  :: file_stem, cls_file, out_file_root, cls_lensed_file
  integer, parameter :: lens_interp =1, lens_exact = 2
@@ -37,7 +38,7 @@ program SimLensCMB
    stop 'No ini'
  end if
  nside  = Ini_Read_Int('nside')
- npix = 12*nside**2
+ npix = nside2npix(nside)
 
  lmax   = Ini_Read_Int('lmax')  
  cls_file = Ini_Read_String('cls_file')

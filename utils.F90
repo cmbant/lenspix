@@ -4,7 +4,6 @@
 !April 2006: fix to TList_RealArr_Thin
 !March 2008: fix to Ranges
 !June 2010: fixed bug in  DeleteFile gradually using up file units
-!This version Mar 2008
 
  module Ranges
  !A collection of ranges, consisting of sections of minimum step size
@@ -1384,7 +1383,7 @@
 
   function ExtractFilePath(aname)
     character(LEN=*), intent(IN) :: aname
-    character(LEN=120) ExtractFilePath
+    character(LEN=1024) ExtractFilePath
     integer len, i
 
     len = len_trim(aname)
@@ -1436,7 +1435,7 @@
 
  function ChangeFileExt(aname,ext)
     character(LEN=*), intent(IN) :: aname,ext
-    character(LEN=120) ChangeFileExt
+    character(LEN=1024) ChangeFileExt
     integer len, i
 
     len = len_trim(aname)
@@ -1453,7 +1452,7 @@
 
   function CheckTrailingSlash(aname)
      character(LEN=*), intent(in) :: aname
-     character(LEN=120) CheckTrailingSlash
+     character(LEN=1024) CheckTrailingSlash
      integer len
      
      len = len_trim(aname)
@@ -1600,7 +1599,7 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
  end subroutine CreateOpenFile
 
  function TxtNumberColumns(InLine) result(n)
-   character(LEN=4096) :: InLine
+   character(LEN=*) :: InLine
    integer n,i
    logical isNum    
    
@@ -1618,7 +1617,7 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
  end function TxtNumberColumns
  
   function TxtColumns(InLine) result(n)
-   character(LEN=4096) :: InLine
+   character(LEN=*) :: InLine
    integer n,i
    logical isNum    
    
@@ -1638,7 +1637,7 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
  function FileColumns(aunit) result(n)
    integer, intent(in) :: aunit
    integer n
-   character(LEN=4096) :: InLine
+   character(LEN=4096*32) :: InLine
 
    n=0
    read(aunit,'(a)', end = 10) InLine
@@ -1667,7 +1666,7 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
 
  function TopCommentLine(aname) result(res)
     character(LEN=*), intent(IN) :: aname
-    integer n, file_id 
+    integer file_id 
     character(LEN=1024) :: InLine, res
     
     res = ''
@@ -2083,7 +2082,7 @@ subroutine CreateOpenTxtFile(aname, aunit, append)
       integer, parameter :: dl = KIND(1.d0)
       integer, intent(in) :: l2in,l3in, m2in,m3in
       real(dl), dimension(*) :: thrcof
-      INTEGER, PARAMETER :: i8 = 8
+      INTEGER, PARAMETER :: i8 = selected_int_kind(18)
       integer(i8) :: l2,l3,m2,m3
       integer(i8) :: l1, m1, l1min,l1max, lmatch, nfin, a1, a2
       
