@@ -1,12 +1,14 @@
 #now using v11+ intel ifort
 
 #Intel. Note heap-arrays needs v10+ of compiler, and avoids Seg Faults for large arrays
-F90C     = ifort
+F90C     = mpif90
+#F90C    = ifort
 
 healpix = $(HEALPIX)
 LAPACKL = -mkl=sequential -lmkl_lapack -lmpi -lhealpix
 
-#Had problems with -O3 using ifort 11.1 and 12
+#Had problems with -O3 using ifort 11.1 and 12; use -fast if cluster is homogeneous
+#add -DHEALPIXI4B if using older healpix and get errors about arguments not matching
 FFLAGS = -O2 -ip -fpp -error-limit 5 -DMPIPIX -DMPI -heap-arrays
 
 ifndef CFITSIO
