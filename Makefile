@@ -18,7 +18,9 @@ cfitsio = $(CFITSIO)
 endif
 
 #cosmos seems to have only openmp healpix installed
-ifeq ($(COSMOHOST),cosmos)
+ifneq ($(COSMOHOST),)
+F90C    = ifort
+FFLAGS += -openmp
 LINKFLAGS = -openmp
 endif
 
