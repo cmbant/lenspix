@@ -1322,10 +1322,10 @@ contains
 
    nlheader = SIZE(header)
    if (dophi) then
-       call HealpixMap_AllocateTQU(TmpMap,1) 
+       call HealpixMap_Init(tmpMap, M%npix,1)
        TmpMap%TQU(:,1)=M%Phi
        call write_bintab(TmpMap%TQU, M%npix,1, header, nlheader, fname)
-       deallocate(TmpMap%TQU)
+       call HealpixMap_Free(TmpMap)
    else        
     call write_bintab(M%TQU, M%npix, M%nmaps, header, nlheader, fname)
    end if
