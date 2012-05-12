@@ -5,12 +5,72 @@ MODULE Grid_Interpolation
 !      VOL. 22, NO. 3, September, 1996, P.  357--361.
 
 IMPLICIT NONE
-PRIVATE
- integer, parameter :: GI = KIND(1.0)
-PUBLIC  :: rgbi3p, rgsf3p
 
+Type Grid_Interpolation_Data
+     REAL, pointer :: wk(:,:,:) => NULL()
+     REAL, pointer :: x(:), y(:)
+     integer nx, ny     
+    
+end Type Grid_Interpolation_Data
+
+
+integer, parameter :: GI = KIND(1.0)
 
 CONTAINS
+
+!Utility wrappers by AL, 2012
+subroutine Grid_Interpolation_Init(W, x,y, z)
+ Type(Grid_Interpolation_Data):: W
+ REAL, INTENT(IN)      :: x(:)
+ REAL, INTENT(IN)      :: y(:)
+ REAL, INTENT(IN)  :: z(:,:)
+ 
+ W%nx = size(x)
+ W%ny = size(y) 
+ allocate(W%Wk(3,W%NX,W%NY))
+ allocate(W%x(W%nx))
+ allocate(W%y(W%ny))
+ W%x = x
+ W%y = y
+ CALL rgpd3p(W%nx, W%ny, x, y, z, W%wk)
+ 
+end subroutine Grid_Interpolation_Init
+
+subroutine Grid_Interpolation_Free(W)
+ Type(Grid_Interpolation_Data):: W
+ deallocate(W%x)
+ deallocate(W%y)
+ deallocate(W%Wk) 
+
+end subroutine Grid_Interpolation_Free
+
+function Grid_Interpolate(W,zin, x,y) result (res)
+  Type(Grid_Interpolation_Data) :: W
+  real res, z(1), xx(1),yy(1)
+  real, intent(in) :: x,y, zin(:,:)
+  integer md,ier
+  
+  md=2
+  xx(1)=x
+  yy(1)=y
+  call rgbi3p(W%Wk,md, W%nx, W%ny, W%x, W%y, zin, 1, xx, yy, z, ier)
+  if (ier/=0) stop 'Grid_Interpolate error'
+  res = z(1)
+  
+end function Grid_Interpolate
+
+subroutine Grid_InterpolatePoints(W, zin, nip, x,y,z) 
+  Type(Grid_Interpolation_Data) :: W
+  integer, intent(in) :: nip
+  real, intent(out):: z(*)
+  real, intent(in) :: x(*),y(*), zin(:,:)
+  integer md,ier
+  
+  md=2
+  call rgbi3p(W%Wk,md, W%nx, W%ny, W%x, W%y, zin, nip, x, y, z, ier)
+  if (ier/=0) stop 'Grid_Interpolate error'
+  
+end subroutine Grid_InterpolatePoints
 
 
 SUBROUTINE rgbi3p(Wk,md, nxd, nyd, xd, yd, zd, nip, xi, yi, zi, ier)

@@ -1256,17 +1256,25 @@ contains
 
   end subroutine HealpixMap_Read
 
-  subroutine HealpixMap_Write(M, fname, overwrite)
+  subroutine HealpixMap_Write(M, fname, overwrite, phi_map)
     Type(HealpixMap), intent(in) :: M
     character(LEN=*), intent(in) :: fname
     logical, intent(in), optional :: overwrite
+    logical, intent(in), optional :: phi_map
     CHARACTER(LEN=80), DIMENSION(1:120) :: header
     integer nlheader
+    logical dophi
+    Type(HealpixMap) :: TmpMap
 
     if (present(overwrite)) then
      if (overwrite) call DeleteFile(fname)
     else
      if (FileExists(fname)) call MpiStop('HealpixMap_Write: file already exists - '//trim(fname))
+    end if
+    if (present(phi_map)) then
+     dophi= phi_map
+    else
+     dophi=.false.
     end if
 
     header = ' '
@@ -1286,29 +1294,41 @@ contains
     call add_card(header,'CREATOR','HEALPixObj',        'Software creating the FITS file')
     call add_card(header,'INDXSCHM','IMPLICIT',' Indexing : IMPLICIT or EXPLICIT')
     call add_card(header,'GRAIN', 0, ' Grain of pixel indexing') ! full sky
-    if (M%nmaps == 3) then
+    if (M%nmaps == 3 .and. .not. dophi) then
      call add_card(header,'POLAR',.true.," Polarisation included (True/False)")
     else
      call add_card(header,'POLAR',.false.," Polarisation included (True/False)")
     endif
     call add_card(header) ! blank line
-    call add_card(header,"TTYPE1", "TEMPERATURE","Temperature map")
-    call add_card(header,"TUNIT1", "muK", "map unit")
-    call add_card(header)
-    if (M%nmaps == 3) then
-       call add_card(header,"TTYPE2", "Q-POLARISATION","Q Polarisation map")
-       call add_card(header,"TUNIT2", "muK", "map unit")
-       call add_card(header)
-       call add_card(header,"TTYPE3", "U-POLARISATION","U Polarisation map")
-       call add_card(header,"TUNIT3", "muK", "map unit")
-       call add_card(header)
-    endif
+    if (dophi) then
+        if (.not. M%hasPhi) call MpiStop('HealpixMap_Write: no phi map')
+        call add_card(header,"TTYPE1", "LENSPOT","Lensing potential")
+        call add_card(header,"TUNIT1", "1", "map unit")    
+        call add_card(header)
+    else    
+        call add_card(header,"TTYPE1", "TEMPERATURE","Temperature map")
+        call add_card(header,"TUNIT1", "muK", "map unit")
+        call add_card(header)
+        if (M%nmaps == 3) then
+           call add_card(header,"TTYPE2", "Q-POLARISATION","Q Polarisation map")
+           call add_card(header,"TUNIT2", "muK", "map unit")
+           call add_card(header)
+           call add_card(header,"TTYPE3", "U-POLARISATION","U Polarisation map")
+           call add_card(header,"TUNIT3", "muK", "map unit")
+           call add_card(header)
+        endif
+    end if
     call add_card(header,"COMMENT","*************************************")
 
    nlheader = SIZE(header)
-  
-   call write_bintab(M%TQU, M%npix, M%nmaps, header, nlheader, fname)
-
+   if (dophi) then
+       call HealpixMap_AllocateTQU(TmpMap,1) 
+       TmpMap%TQU(:,1)=M%Phi
+       call write_bintab(TmpMap%TQU, M%npix,1, header, nlheader, fname)
+       deallocate(TmpMap%TQU)
+   else        
+    call write_bintab(M%TQU, M%npix, M%nmaps, header, nlheader, fname)
+   end if
   end  subroutine HealpixMap_Write
 
   subroutine HealpixAlm_Write(A, fname)
