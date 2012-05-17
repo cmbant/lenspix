@@ -1201,9 +1201,11 @@ contains
   end subroutine HealpixMap_Assign
 
 
-  subroutine HealpixMap_Read(OutMAP,fname, map_limit)
+  subroutine HealpixMap_Read(OutMAP,fname, map_limit, phi_map, spin_map)
    CHARACTER(LEN=80), DIMENSION(1:120) :: header_in
    character(LEN=*), intent(in) :: fname
+   logical, intent(in), optional :: phi_map
+   integer, intent(in), optional :: spin_map
    integer, optional :: map_limit
    integer nmaps
    
@@ -1227,11 +1229,39 @@ contains
      print*,'FITS header keyword NSIDE = ',OutMap%nside,' does not correspond'
      print*,'to the size of the map!'
      call MpiStop('')
-   endif
+  endif
 
-   OutMap%HasPhi = .false.
-   OutMap%spin = nospinmap
-   if (OutMap%nmaps/=nmaps) then
+
+   if (present(phi_map)) then
+    OutMap%HasPhi = phi_map
+   else
+    OutMap%HasPhi = .false.
+   end if
+   if (present(spin_Map)) then
+     OutMap%spin = spin_map
+   else   
+     OutMap%spin = nospinmap
+   end if
+   if (OutMap%HasPhi) then
+       TmpMap=OutMap
+       call HealpixMap_AllocateTQU(TmpMap,1) 
+       call input_map(fname, TmpMAP%TQU, OutMap%npix, 1, &
+       &   fmissval=fmissval, header= header_in)
+       call HealpixMap_AllocatePhi(OutMap)   
+       OutMap%Phi = TmpMap%TQU(:,1)
+       OutMap%nmaps=0
+       call HealpixMap_Free(TmpMap)   
+    else if (OutMap%spin /= nospinmap) then
+       TmpMap=OutMap
+       call HealpixMap_AllocateTQU(TmpMap,2) 
+       call input_map(fname, TmpMAP%TQU, OutMap%npix, 2, &
+       &   fmissval=fmissval, header= header_in)
+       ALLOCATE(OutMap%SpinField(0:OutMap%npix-1))
+       OutMap%SpinField = cmplx(TmpMap%TQU(:,1),TMpMap%TQU(:,2)) 
+       OutMap%nmaps=0
+       call HealpixMap_Free(TmpMap) 
+   else
+    if (OutMap%nmaps/=nmaps) then
      TmpMap=OutMap
      call HealpixMap_AllocateTQU(TmpMap,TmpMap%nmaps) 
      call input_map(fname, TmpMAP%TQU, OutMap%npix, TmpMap%nmaps, &
@@ -1246,7 +1276,7 @@ contains
     call input_map(fname, OutMAP%TQU, OutMap%npix, OutMap%nmaps, &
        &   fmissval=fmissval, header= header_in)
    end if
-       
+   end if    
    
 !!To do, boring...
   ! do j=1,nmaps
@@ -1256,14 +1286,14 @@ contains
 
   end subroutine HealpixMap_Read
 
-  subroutine HealpixMap_Write(M, fname, overwrite, phi_map)
+  subroutine HealpixMap_Write(M, fname, overwrite, phi_map, spin_map)
     Type(HealpixMap), intent(in) :: M
     character(LEN=*), intent(in) :: fname
     logical, intent(in), optional :: overwrite
-    logical, intent(in), optional :: phi_map
+    logical, intent(in), optional :: phi_map, spin_map
     CHARACTER(LEN=80), DIMENSION(1:120) :: header
     integer nlheader
-    logical dophi
+    logical dophi, dospin
     Type(HealpixMap) :: TmpMap
 
     if (present(overwrite)) then
@@ -1275,6 +1305,12 @@ contains
      dophi= phi_map
     else
      dophi=.false.
+    end if
+    if (present(spin_map)) then
+     dospin= spin_map
+     if (dospin .and. dophi) call MpiStop('HealpixMap_Write: only writes on thing at a time')
+    else
+     dospin=.false.
     end if
 
     header = ' '
@@ -1305,7 +1341,14 @@ contains
         call add_card(header,"TTYPE1", "LENSPOT","Lensing potential")
         call add_card(header,"TUNIT1", "1", "map unit")    
         call add_card(header)
-    else    
+    else if (dospin) then
+           call add_card(header,"TTYPE1", "Q-spin","Q spin map")
+           call add_card(header,"TUNIT1", "muK", "map unit")
+           call add_card(header)
+           call add_card(header,"TTYPE2", "U-spin","U Spin map")
+           call add_card(header,"TUNIT2", "muK", "map unit")
+           call add_card(header)
+    else
         call add_card(header,"TTYPE1", "TEMPERATURE","Temperature map")
         call add_card(header,"TUNIT1", "muK", "map unit")
         call add_card(header)
@@ -1326,11 +1369,56 @@ contains
        TmpMap%TQU(:,1)=M%Phi
        call write_bintab(TmpMap%TQU, M%npix,1, header, nlheader, fname)
        call HealpixMap_Free(TmpMap)
-   else        
-    call write_bintab(M%TQU, M%npix, M%nmaps, header, nlheader, fname)
+   else if (dospin) then
+       call HealpixMap_Init(tmpMap, M%npix,2)
+       TmpMap%TQU(:,1)=real(M%SpinField)
+       TmpMap%TQU(:,2)=aimag(M%SpinField)       
+       call write_bintab(TmpMap%TQU, M%npix,2, header, nlheader, fname)
+       call HealpixMap_Free(TmpMap)   
+   else
+       call write_bintab(M%TQU, M%npix, M%nmaps, header, nlheader, fname)
    end if
   end  subroutine HealpixMap_Write
 
+  subroutine HealpixMap_SymmetricCut(H,M,cos_theta_cut)
+  !sets to zero in symmetric cut around galaxy
+    Type (HealpixInfo) :: H
+    Type (HealpixMap) :: M
+    integer ith, nph
+    real cos_theta_cut,cth, dth
+    
+    do ith = 1, 2*H%nside
+
+       if (ith  <=  H%nside-1) then      ! north polar cap
+          nph = 4*ith
+          dth = 1.0_dp / (3.0_dp*DBLE( H%nside)**2)
+          cth = 1.0_dp  - DBLE(ith)**2 * dth
+       else                            ! tropical band + equat.
+          nph = 4*H%nside
+          dth = 2.0_dp / (3.0_dp*DBLE( H%nside))
+          cth = DBLE(2* H%nside-ith) * dth
+       endif
+
+       if (.not.  (ABS(cth) > cos_theta_cut) ) then
+         if (M%nmaps/=0) then
+           M%TQU(H%istart_north(ith-1):H%istart_north(ith-1)+nph-1,:)=0
+           if (ith  <  2*H%nside ) then
+             M%TQU(H%istart_south(ith):H%istart_south(ith)+nph-1,:)=0
+           endif
+         end if
+         if (M%spin/=nospinmap) then
+           if (M%nmaps/=0) then
+            M%SpinField(H%istart_north(ith-1):H%istart_north(ith-1)+nph-1)=0
+           if (ith  <  2*H%nside ) then
+             M%SpinField(H%istart_south(ith):H%istart_south(ith)+nph-1)=0
+           endif
+         end if
+         end if
+       endif
+     end do
+       
+  end subroutine HealpixMap_SymmetricCut
+  
   subroutine HealpixAlm_Write(A, fname)
     !Thanks to Sam Leach
     Type(HealpixAlm), intent(in) :: A
@@ -1614,6 +1702,7 @@ contains
        Type(HealpixAlm) :: A
        real(dp), intent(in) :: fwhm
        
+      if (MapIn%nmaps==0) call MpiStop('HealpixMap_Smooth: only smooths TQU')
       call HealpixMap2Alm(H,MapIn, A, lmax)
       call HealpixAlm_Smooth(A, fwhm)       
       call HealpixAlm2Map(H,A, MapOut, MapIn%npix)
