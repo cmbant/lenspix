@@ -3,7 +3,7 @@ module HealpixObj
  USE head_fits, ONLY : add_card, get_card
  USE pix_tools, ONLY :  npix2nside, nside2npix, query_disc
  USE fitstools, ONLY : getsize_fits, input_map, read_par, read_dbintab, write_asctab, &
-   dump_alms,write_bintab
+   dump_alms,write_bintab, fits2alms
  USE spinalm_tools
  use AMLutils
  implicit none
@@ -377,6 +377,7 @@ contains
     call HealpixPower_Init(P,A%lmax,A%npol==3, A%HasPhi)
     
     P%Cl(0:1,:) = 0
+    if (A%npol>0) then
     do l=0, P%lmax
      if (l<2) then
      ix= 1
@@ -393,11 +394,13 @@ contains
            ) / (2.*l + 1.)
       end if
     end do 
+    end if
     
     if (A%HasPhi) then
        do l=0, P%lmax
          P%PhiCl(l,1) = ( REAL(A%Phi(1,l,0))**2 &
                 + 2.*SUM(A%Phi(1,l,1:l)*CONJG(A%Phi(1,l,1:l)) )) / (2*l + 1)
+         if (A%npol >0) then
          !T-phi
          P%PhiCl(l,2) = ( REAL(A%TEB(1,l,0))*REAL(A%Phi(1,l,0)) &
                 + 2.*SUM(real(A%TEB(1,l,1:l)*CONJG(A%Phi(1,l,1:l))) )) /(2*l + 1)
@@ -406,6 +409,7 @@ contains
            P%PhiCl(l,3) = ( REAL(A%TEB(2,l,0))*REAL(A%Phi(1,l,0)) &
                 + 2.*SUM(real(A%TEB(2,l,1:l)*CONJG(A%Phi(1,l,1:l))) )) /(2*l + 1)
          end if 
+         end if
        end do 
          
     end if
@@ -642,10 +646,17 @@ contains
    end if
    xlc= 180*sqrt(8.*log(2.))/HO_pi
    sigma2 = (fwhm/xlc)**2
-
-   do l=2,A%lmax
+   if (A%npol/=0) then
+    do l=2,A%lmax
      A%TEB(:,l,:) =  A%TEB(:,l,:)*exp(sn*l*(l+1)*sigma2/2)
-   end do
+    end do
+   end if
+   
+   if (A%spin /= nospinmap) then
+    do l=2,A%lmax
+     A%SpinEB(:,l,:) =  A%SpinEB(:,l,:)*exp(sn*l*(l+1)*sigma2/2)
+    end do
+   end if
 
   end subroutine HealpixAlm_Smooth
 
@@ -672,6 +683,37 @@ contains
   end subroutine HealpixAlm_Smooth_Beam
 
 
+  subroutine HealpixAlm_Read(A, fname, lmax, npol_in)
+     Type(HealpixAlm) :: A
+     character(LEN=*) :: fname
+     integer, intent(in) :: lmax
+     integer, intent(in), optional ::npol_in
+     integer i, nalm, npol
+     real, allocatable :: alms(:,:,:)
+     character(len=80) header(80,3)
+     
+     if (present(npol_in)) then
+         npol=npol_in
+     else
+         npol=1
+     end if    
+     
+     call HealpixAlm_Init(A, lmax, npol)
+     nalm = (lmax+1)*(lmax+2)/2
+     allocate(alms(1:nalm,1:(3+1),1:npol))
+     call fits2alms(fname, nalm, alms, 3, header, 80, npol) 
+
+     do i=1,nalm
+      A%TEB(1,nint(alms(i,1,1)),nint(alms(i,2,1)))=cmplx(alms(i,3,1),alms(i,4,1))
+      if (npol>1) then
+       A%TEB(2,nint(alms(i,1,2)),nint(alms(i,2,2)))=cmplx(alms(i,3,2),alms(i,4,2))
+       A%TEB(3,nint(alms(i,1,3)),nint(alms(i,2,3)))=cmplx(alms(i,3,3),alms(i,4,3))
+      end if
+     end do 
+     deallocate(alms)   
+  
+  end subroutine HealpixAlm_Read
+  
   subroutine HealpixMap_GetAzimCut(M, npix,rad, theta,phi)
    !1 inside disc radius rad centred at theta, phi (radians)
     use pix_tools
@@ -684,6 +726,9 @@ contains
     call HealpixMap_GetAzimCutVec(M, npix, rad, vec)
     
   end subroutine HealpixMap_GetAzimCut
+  
+
+
 
   subroutine HealpixMap_GetAzimCutVec(M, npix,rad, Vec)
    !inside disc radius rad centred at vec
@@ -853,6 +898,26 @@ contains
     
   end subroutine HealpixMap_MarkEclipticPlane
 
+   subroutine HealpixMap_MarkEcliptic(M, rad, val)
+   !inside disc radius rad 
+    use pix_tools
+    use coord_v_convert
+    Type(HealpixMap) :: M
+    real(dp), intent(in) :: rad
+    real(dp), intent(in) :: val
+    integer(I4B), dimension(:), allocatable :: listpix
+    real(dp):: vec(3),vecout(3)
+    integer nlist
+  
+    allocate(listpix(0:M%npix-1))
+    call ang2vec(0.d0,0.d0,vec)
+    call xcc_DP_E_TO_G(vec,2000.d0,vecout)
+    call query_disc(M%nside,vecout, rad, listpix,nlist)
+    M%TQU(listpix(0:nlist-1),1) = val
+    deallocate(listpix)     
+
+  end subroutine HealpixMap_MarkEcliptic
+  
 
   subroutine HealpixMap_GalacticToEcliptic(M)
    !Not at all optimal
@@ -923,14 +988,14 @@ contains
   end  subroutine HealpixMap_AddUncorrelatedNoise
 
 
-  subroutine HealpixAlm_Sim(A, P, seed, HasPhi, dopol)
+  subroutine HealpixAlm_Sim(A, P, seed, HasPhi, dopol,DoT)
    use random
    use alm_tools
    use ran_tools
    Type(HealpixAlm) :: A
    Type(HealpixPower) :: P
    integer, intent(in), optional :: seed
-   logical, intent(in), optional :: HasPhi,dopol
+   logical, intent(in), optional :: HasPhi,dopol,DoT
    integer l,m
    logical wantphi
    integer wantpol
@@ -950,6 +1015,11 @@ contains
      if (dopol) wantpol = 3
    end if
 
+   if(present(DoT)) then
+    if (.not. DoT) wantpol=0 
+   end if
+
+   
    if (present(HasPhi)) then
      wantphi= HasPhi
      if (wantphi .and. .not. associated(P%PhiCl)) call MpiStop('HealpixAlm_Sim: PhiCl not present')
@@ -959,14 +1029,17 @@ contains
 
    call HealpixAlm_Init(A,P%lmax, wantpol, HasPhi=wantphi)
    sqrt2 = sqrt(2.)
-   A%TEB=0
-   do l=1, P%lmax
+   if (wantpol/=0) then
+    A%TEB=0
+    do l=1, P%lmax
       A%TEB(1,l,0) =Gaussian1()* sqrt(P%Cl(l,1))
       tamp = sqrt(P%Cl(l,1)/2)
       do m = 1, l
        A%TEB(1,l,m) =cmplx(Gaussian1(),Gaussian1())*tamp
       end do 
-   end do
+    end do
+   end if
+   
    if (wantphi) A%Phi=0
      
    if (wantpol >= 3) then  
@@ -1000,28 +1073,35 @@ contains
    if (wantphi) then
      !Make phi with correct correlation to T and E, AL May 2010
      do l=1, P%lmax
-      if (P%Cl(l,1)==0) then
-        tamp = 1.0
-      else
-        tamp=P%Cl(l,1)
-      end if
-      corr = P%PhiCl(l,2)/tamp
-      if (wantpol >=3 .and. l>=2) then
-       Examp = (P%PhiCl(l,3)-corr*P%cl(l,C_C))*sqrt( tamp/(p%cl(l,C_E)*tamp - p%cl(l,C_C)**2))
-       xamp = sqrt(max(0._sp, P%PhiCl(l,1) - corr*P%PhiCl(l,2) - Examp**2 ))
-       A%Phi(1,l,0) =  Examp * A%Phi(1,l,0)
-       Examp = Examp/sqrt2
-      else
-        xamp = sqrt(max(0._sp,P%PhiCl(l,1) - corr*P%PhiCl(l,2)))
-      end if        
-      A%Phi(1,l,0) = A%Phi(1,l,0) + corr*A%TEB(1,l,0) + Gaussian1()*xamp
-      xamp=  xamp/sqrt2
-      do m = 1, l
-        if (wantpol >=3 .and. l>=2) A%Phi(1,l,m) =  Examp * A%Phi(1,l,m) 
-        A%Phi(1,l,m) = A%Phi(1,l,m) + corr*A%TEB(1,l,m) + cmplx(Gaussian1(),Gaussian1())*xamp
-      end do
-     end do 
-
+      if (wantpol==0) then
+        A%Phi(1,l,0) =Gaussian1()* sqrt(P%PhiCl(l,1))
+        tamp = sqrt(P%PhiCl(l,1)/2)
+        do m = 1, l
+         A%Phi(1,l,m) =cmplx(Gaussian1(),Gaussian1())*tamp
+        end do          
+      else   
+          if (P%Cl(l,1)==0) then
+            tamp = 1.0
+          else
+            tamp=P%Cl(l,1)
+          end if
+          corr = P%PhiCl(l,2)/tamp
+          if (wantpol >=3 .and. l>=2) then
+           Examp = (P%PhiCl(l,3)-corr*P%cl(l,C_C))*sqrt( tamp/(p%cl(l,C_E)*tamp - p%cl(l,C_C)**2))
+           xamp = sqrt(max(0._sp, P%PhiCl(l,1) - corr*P%PhiCl(l,2) - Examp**2 ))
+           A%Phi(1,l,0) =  Examp * A%Phi(1,l,0)
+           Examp = Examp/sqrt2
+          else
+            xamp = sqrt(max(0._sp,P%PhiCl(l,1) - corr*P%PhiCl(l,2)))
+          end if        
+          A%Phi(1,l,0) = A%Phi(1,l,0) + corr*A%TEB(1,l,0) + Gaussian1()*xamp
+          xamp=  xamp/sqrt2
+          do m = 1, l
+            if (wantpol >=3 .and. l>=2) A%Phi(1,l,m) =  Examp * A%Phi(1,l,m) 
+            A%Phi(1,l,m) = A%Phi(1,l,m) + corr*A%TEB(1,l,m) + cmplx(Gaussian1(),Gaussian1())*xamp
+          end do
+     end if
+      end do 
    end if
 
   end subroutine HealpixAlm_Sim
@@ -1376,6 +1456,7 @@ contains
        call write_bintab(TmpMap%TQU, M%npix,2, header, nlheader, fname)
        call HealpixMap_Free(TmpMap)   
    else
+       if (.not. associated(M%TQU)) call MpiStop('HealpixMap_Write: TQU not allocated')
        call write_bintab(M%TQU, M%npix, M%nmaps, header, nlheader, fname)
    end if
   end  subroutine HealpixMap_Write
@@ -1590,6 +1671,18 @@ contains
 
    end subroutine HealpixMap_MulCutFile
 
+   subroutine HealpixMap2Power(H, M,P, almax)
+     Type (HealpixInfo) :: H
+     Type(HealpixMap), intent(in) :: M
+     integer, intent(in) :: almax
+     Type(HealpixPower) :: P
+     Type(HealpixAlm) :: A
+     
+     call HealpixMap2Alm(H,M,A,almax)
+     call HealpixAlm2Power(A,P) 
+     call HealpixAlm_Free(A)
+   
+   end subroutine HealpixMap2Power
 
    subroutine HealpixMap2alm(H, M,A, almax,theta_cut_deg,map_ix, dopol)
 
@@ -1702,7 +1795,7 @@ contains
        Type(HealpixAlm) :: A
        real(dp), intent(in) :: fwhm
        
-      if (MapIn%nmaps==0) call MpiStop('HealpixMap_Smooth: only smooths TQU')
+      if (MapIn%nmaps==0 .and. MapIn%spin==nospinmap) call MpiStop('HealpixMap_Smooth: only smooths TQU')
       call HealpixMap2Alm(H,MapIn, A, lmax)
       call HealpixAlm_Smooth(A, fwhm)       
       call HealpixAlm2Map(H,A, MapOut, MapIn%npix)

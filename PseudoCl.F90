@@ -424,7 +424,7 @@ end subroutine TBeam_PowerSmooth2
    end subroutine AssignSym
 
 
-subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl, inpolweights)
+subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl, inpolweights, inpolspin)
   !Get coupling matrix from power spectrum of the weight function
   !For the moment assume weight same for all maps
   !Returns the symmetric form M_{l1 l2}/(2*l2+1)
@@ -437,6 +437,7 @@ subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl
   logical, intent(in) :: indopol
   integer, intent(in) :: inlmin,inlmax, inncl
   logical, intent(in) :: inpolweights
+  integer, intent(in), optional :: inpolspin
   integer ncl,lmax, npolweights
   logical dopol
   real(dp), dimension(:,:,:), allocatable :: W
@@ -444,11 +445,11 @@ subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl
   real(dp), dimension(:,:,:), allocatable ::  blocks
   
   real(dp), dimension(:), allocatable :: threejj0, threejj2, sthreejj0, sthreejj2,sthreejj20
-  integer :: lmin, nl, l1, l2, lplus, lminus, Plmax
+  integer :: lmin, nl, l1, l2, lplus, lminus,  Plmax
   integer clix
   integer MpiID, MpiSize
-  integer colix, ierr, ncols
-  integer id, params(5), TPix, PPix
+  integer colix, ierr, ncols, polspin
+  integer id, params(6), TPix, PPix
   double precision IniTime
   !Assume loads of memory
   
@@ -469,6 +470,12 @@ subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl
   else
    params(5)= 1
   end if
+  if (.not. present(inpolspin)) then
+      params(6)=2
+  else
+      params(6)=inpolspin
+  end if    
+   
 #ifdef MPIPIX
   call MPI_BCAST(params,SIze(params),MPI_INTEGER, 0, MPI_COMM_WORLD, ierr) 
 #endif   
@@ -478,6 +485,7 @@ subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl
   dopol = params(3)==1
   lmin=params(4)
   npolweights = params(5)
+  polspin = params(6)
   if (npolweights==1) then
    TPix=1
    PPix=1
@@ -540,7 +548,6 @@ subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl
 #ifdef MPIPIX
    call MPI_BCAST(W,SIze(W),MPI_DOUBLE_PRECISION, 0, MPI_COMM_WORLD, ierr)  
 #endif    
-
   colix =0
   do l1 = lmin + MpiID, lmax, MpiSize
             colix = colix+1
@@ -555,9 +562,10 @@ subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl
             sthreejj0(lminus:lplus) = threejj0(lminus:lplus)**2               
                     
             if (dopol) then
-             call GetThreeJs(threejj2(lminus:),l1,l2,-2,2)
-             sthreejj2(lminus:lplus) = threejj2(lminus:lplus)**2               
-             sthreejj20(lminus:lplus:2) = threejj0(lminus:lplus:2)*threejj2(lminus:lplus:2)              
+                !note that lminus is correct, want max(abs(l1-l2),abs(m1)) where m1=0 here
+             call GetThreeJs(threejj2(lminus:),l1,l2,-polspin,polspin)
+             sthreejj2(lminus:lplus) = threejj2(lminus:lplus)**2
+             sthreejj20(lminus:lplus:2) = threejj0(lminus:lplus:2)*threejj2(lminus:lplus:2)   
             end if
 
             do clix = 1, ncl
@@ -566,10 +574,9 @@ subroutine PseudoCl_GetCouplingMatrixArr(M_in, P, inlmin, inlmax, indopol, inncl
             
             if (dopol) then
 
-             M(clix)%X(l2,colix) = sum(W(lminus:lplus:2,clix,TPix)*sthreejj20(lminus:lplus:2))            
+             M(clix)%X(l2,colix) = sum(W(lminus:lplus:2,clix,TPix)*sthreejj20(lminus:lplus:2))   
              M(clix)%EE(l2,colix) = sum(W(lminus:lplus:2,clix,PPix)*sthreejj2(lminus:lplus:2))
              M(clix)%EB(l2,colix) = sum(W(lminus+1:lplus:2,clix,PPix)*sthreejj2(lminus+1:lplus:2))             
-             
             end if
  
            end do
