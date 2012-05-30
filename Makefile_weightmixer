@@ -1,0 +1,67 @@
+#now using v11+ intel ifort
+
+#Intel. Note heap-arrays needs v10+ of compiler, and avoids Seg Faults for large arrays
+F90C     = mpif90
+#F90C    = ifort
+
+healpix = $(HEALPIX)
+LAPACKL = -mkl=sequential -lmkl_lapack -lmpi -lhealpix
+
+#Had problems with -O3 using ifort 11.1 and 12; use -fast if cluster is homogeneous
+#add -DHEALPIXI4B if using older healpix and get errors about arguments not matching
+FFLAGS = -O2 -ip -fpp -error-limit 5 -DMPIPIX -DMPI -heap-arrays
+
+ifndef CFITSIO
+cfitsio = /usr/local/cfitsio/intel10/64/3.040/lib
+else
+cfitsio = $(CFITSIO)
+endif
+
+#cosmos seems to have only openmp healpix installed
+ifneq ($(COSMOHOST),)
+F90C    = ifort
+FFLAGS += -openmp
+LINKFLAGS = -openmp
+endif
+
+F90FLAGS = $(FFLAGS) -I$(INCLUDE) -I$(healpix)/include -L$(cfitsio) -L$(healpix)/lib $(LAPACKL) -lcfitsio
+
+OBJFILES= toms760.o inifile.o utils.o spin_alm_tools.o \
+   HealpixObj.o HealpixVis.o
+
+OBJFILESS = $(OBJFILES)  SimLens.o
+
+OBJFILESW = $(OBJFILES)  Matrix_utils.o PseudoCl.o AsymmCouplings.o WeightMixer.o
+
+default: weightmixer
+all: weightmixer
+
+spin_alm_tools.o:  utils.o toms760.o
+HealpixObj.o: spin_alm_tools.o
+HealpixVis.o: HealpixObj.o
+AsymmCouplings.o: PseudoCl.o
+PseudoCl.o: Matrix_utils.o HealpixObj.o
+Matrix_utils.o: utils.o
+
+WeightMixer.o: HealpixVis.o PseudoCl.o inifile.o AsymmCouplings.o
+SimLens.o: HealpixVis.o inifile.o
+
+.f.o:
+	f77 $(F90FLAGS) -c $<
+
+%.o: %.f90
+	$(F90C) $(F90FLAGS) -c $*.f90
+
+%.o: %.F90
+	$(F90C) $(F90FLAGS) -c $*.F90
+
+
+simlens: $(OBJFILESS) 	
+	$(F90C) -o simlens $(OBJFILESS) $(F90FLAGS) $(LINKFLAGS)
+
+weightmixer: $(OBJFILESW) 	
+	$(F90C) -o weightmixer $(OBJFILESW) $(F90FLAGS) $(LINKFLAGS)
+
+
+clean:
+	rm -f *.o* *.e* *.mod *.d *.pc *.obj core* *.il
