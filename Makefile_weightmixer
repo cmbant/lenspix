@@ -9,7 +9,7 @@ LAPACKL = -mkl=sequential -lmkl_lapack -lmpi -lhealpix
 
 #Had problems with -O3 using ifort 11.1 and 12; use -fast if cluster is homogeneous
 #add -DHEALPIXI4B if using older healpix and get errors about arguments not matching
-FFLAGS = -O2 -ip -fpp -error-limit 5 -DMPIPIX -DMPI -heap-arrays
+FFLAGS = -O2 -ip -fpp -error-limit 5 -DMPIPIX -DMPI -heap-arrays -DHEALPIXI4B
 
 ifndef CFITSIO
 cfitsio = /usr/local/cfitsio/intel10/64/3.040/lib
@@ -31,7 +31,7 @@ OBJFILES= toms760.o inifile.o utils.o spin_alm_tools.o \
 
 OBJFILESS = $(OBJFILES)  SimLens.o
 
-OBJFILESW = $(OBJFILES)  Matrix_utils.o PseudoCl.o AsymmCouplings.o WeightMixer.o
+OBJFILESW = $(OBJFILES)  Matrix_utils.o PseudoCl.o AsymmCouplings.o SNModes.o TOMS642.o WeightMixer.o
 
 default: weightmixer
 all: weightmixer
@@ -42,6 +42,7 @@ HealpixVis.o: HealpixObj.o
 AsymmCouplings.o: PseudoCl.o
 PseudoCl.o: Matrix_utils.o HealpixObj.o
 Matrix_utils.o: utils.o
+SNModes.o: AsymmCouplings.o
 
 WeightMixer.o: HealpixVis.o PseudoCl.o inifile.o AsymmCouplings.o
 SimLens.o: HealpixVis.o inifile.o
