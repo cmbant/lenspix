@@ -713,7 +713,41 @@ contains
      deallocate(alms)   
   
   end subroutine HealpixAlm_Read
-  
+
+  subroutine HealpixAlm_RotateEuler(A, psi,theta,phi)
+   ! Euler angle convention  is right handed, active rotation
+    ! psi is the first rotation about the z-axis (vertical), in [-2pi,2pi]
+    ! then theta about the ORIGINAL (unrotated) y-axis, in [-2pi,2pi]
+    ! then phi  about the ORIGINAL (unrotated) z-axis (vertical), in [-2pi,2pi]   
+   use alm_tools
+   Type(HealpixAlm) :: A
+   real(dp), intent(in) :: psi, theta,phi
+
+    call rotate_alm(A%lmax, A%TEB, psi, theta, phi)
+
+  end subroutine HealpixAlm_RotateEuler
+
+
+  subroutine HealpixAlm_RotateGalacticEcliptic(A)
+    use coord_v_convert
+    Type(HealpixAlm) :: A
+    real(dp) :: psi, theta,phi
+
+    call coordsys2euler_zyz(2000.d0, 2000.d0, 'G', 'E', psi, theta, phi)
+    call HealpixAlm_RotateEuler(A, psi, theta, phi)
+
+  end subroutine HealpixAlm_RotateGalacticEcliptic
+
+  subroutine HealpixAlm_RotateLBtoNorthPole(A, l, b) !l,b in degrees
+  Type(HealpixAlm) :: A
+  real(dp), intent(in) :: l, b
+
+
+    call HealpixAlm_RotateEuler(A, -L/180*HO_PI,-(90.d0-b)/180*HO_PI,0.d0)
+
+  end subroutine HealpixAlm_RotateLBtoNorthPole
+
+
   subroutine HealpixMap_GetAzimCut(M, npix,rad, theta,phi)
    !1 inside disc radius rad centred at theta, phi (radians)
     use pix_tools

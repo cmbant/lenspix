@@ -2053,14 +2053,13 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
   
   end subroutine CombineSplitNoiseMaps
 
-  subroutine AddPlanckSimMaps(H, sim_no)
+  subroutine AddPlanckSimMaps(H)
       use pix_tools
        Type(HealpixInfo)  :: H
        Type(HealpixAlm) :: A
        Type(HealpixPower):: P, PS
        real(dp) testvar, MaxN, MaxNP
        Type(HealpixMap) :: NoiseSim, Signal, Noise, SigNoiseSim
-       character(LEN=4) :: sim_no
        character(LEN=256) :: fname, detector_name
        integer i,detector, neighbours(8), nneigh, j, nav, nin
        real fake_noise_fac 
@@ -2100,93 +2099,56 @@ subroutine CrossPowersToHealpixPowerArray2(CrossPowers,PowerArray,dofree)
        ! call HealpixAlm2Power(A, P)
        ! call HealpixPower_Write(P,'0000mm_noise_cls.dat')
        ! call MpiStop()
-        
-        call HealpixMap_Read(Signal,trim(input_data_dir)//'mc_cmb/cl_ctp_alm_'//trim(sim_no)//'_RJ_map.fits')
+        call HealpixMap_Read(Signal,trim(input_data_dir)//'mask.fits')
+        call HealpixVis_Map2ppmfile(Signal, 'outfiles/mask.ppm')
+
+        call HealpixMap_Read(Signal,trim(input_data_dir)//'hitmap.fits')
+        call HealpixVis_Map2ppmfile(Signal, 'outfiles/hitmap.ppm')
+    
+        call HealpixMap_Read(Signal,trim(input_data_dir)//'noise_variance.fits')
+        call HealpixVis_Map2ppmfile(Signal, 'outfiles/noise_variance.ppm')
+    
+       
+        call HealpixMap_Read(Signal,trim(input_data_dir)//'signal.fits')
         call HealpixMap_ForceRing(Signal)
-        call HealpixMap2Alm(H,Signal, A, lmax,dopol =  .true.)
+        call HealpixMap2Alm(H,Signal, A, lmax,dopol =  .false.)
         call HealpixAlm2Power(A, P)
-        call HealpixPower_Write(P,trim(sim_no)//'_input_cls.dat')
+        call HealpixPower_Write(P,'outfiles/input_cls.dat')
 
       !  call HealpixMap_Write(Noise,trim(input_data_dir)//'diag_noise_maps.fits', .true.)
 
-        do detector =1,2
-        nin = 9
-        if (detector==3) then
-         detector_name = 'mm'
-         nin= 3        
-        else if (detector==0) then
-         detector_name = 'sm'        
-        else if (detector==1) then
-         detector_name = '1357.sm'
-        else
-         detector_name = '2468.sm'
-        end if
+        do detector =1,9
 
-        call HealpixMap_Read(NoiseSim,concat(input_data_dir,'mc_noise/ctp3.nmc.0',trim(sim_no),'.',detector_name,'2048.fits'))
-        call HealpixMap_ForceNest(NoiseSim)
-        do i=0, NoiseSim%npix
-         if (any(NoiseSim%TQU(i,:)==fmissval)) then
-           call neighbours_nest(NoiseSim%nside,i,neighbours,nneigh)
-           nav = 0
-           pixav =0
-           do j=1, nneigh
-            if (NoiseSim%TQU(j,1) /= fmissval) then
-              nav = nav+1
-              pixav(1:nin) = pixav(1:nin) + NoiseSim%TQU(j,1:nin)
-            endif
-            if (nav >0) then
-             NoiseSim%TQU(i,:) = pixav(1:nin) / nav
-             !unclear what to do with the noise variance, just average for now - doesn't matter much for cross spectra
-            else
-             print *,'all near pixels missing, detector '//trim(detector_name)
-            end if             
-           end do
-         end if
-        end do
-        
+        call HealpixMap_Read(NoiseSim,concat(trim(input_data_dir)//'noise_realization_0',detector,'.fits'))
+!        call HealpixMap_ForceNest(NoiseSim)
+        if (any(NoiseSim%TQU(:,1)==fmissval))  print * ,detector, 'has missing pix'
         call HealpixMap_ForceRing(NoiseSim)
 
         call HealpixMap_Assign(SigNoiseSim,Signal);
+        SigNoiseSim%TQU(:,1) = Signal%TQU(:,1) + NoiseSim%TQU(:,1)
 
-        !Fake noise not currently used
-        fake_noise_fac = 10 
-        MaxN = fake_noise_fac*maxval(NoiseSim%TQU(:,4), mask = NoiseSim%TQU(:,4)/=fmissval)
-        MaxNP = fake_noise_fac*maxval(NoiseSim%TQU(:,7), mask = NoiseSim%TQU(:,7)/=fmissval)
-        
-        where (NoiseSim%TQU(:,1) /= fmissval)
-         SigNoiseSim%TQU(:,1) = Signal%TQU(:,1) + NoiseSim%TQU(:,1)
-        elsewhere
-         SigNoiseSim%TQU(:,1) = Gaussian1()* sqrt(MaxN)
-         NoiseSim%TQU(:,4) = MaxN
-        end where
-        where (NoiseSim%TQU(:,2) /= fmissval)
-         SigNoiseSim%TQU(:,2) = Signal%TQU(:,2) + NoiseSim%TQU(:,2)
-        elsewhere
-         SigNoiseSim%TQU(:,2) = Gaussian1()* sqrt(MaxNP)
-         NoiseSim%TQU(:,7) = MaxNP
-        end where
-        where (NoiseSim%TQU(:,3) /= fmissval)
-         SigNoiseSim%TQU(:,3) = Signal%TQU(:,3) + NoiseSim%TQU(:,3)
-        elsewhere
-         SigNoiseSim%TQU(:,3) = Gaussian1()* sqrt(MaxNP)
-         NoiseSim%TQU(:,9) = MaxNP
-        end where
-
-        if (detector/=3) then
-         call HealpixMap_Init(Noise, npix,pol = .true.)
-         Noise%TQU(:,1) = NoiseSim%TQU(:,4)
-         Noise%TQU(:,2) = NoiseSim%TQU(:,7)
-         Noise%TQU(:,3) = NoiseSim%TQU(:,9)        
-         fname = concat(input_data_dir,'ctp3_noise_',trim(sim_no),'_d',IntToStr(detector),'.fits')
-         call HealpixMap_Write(Noise,fname, .true.)             
-        end if
-        if (detector==3) then
-         fname = concat(input_data_dir,'ctp3_tot_',trim(sim_no),'_mm.fits')
-        else
-         fname = concat(input_data_dir,'ctp3_tot_',trim(sim_no),'_d',IntToStr(detector),'.fits')
-        end if
+        !
+        !where (NoiseSim%TQU(:,1) /= fmissval)
+        ! SigNoiseSim%TQU(:,1) = Signal%TQU(:,1) + NoiseSim%TQU(:,1)
+        !elsewhere
+        ! SigNoiseSim%TQU(:,1) = Gaussian1()* sqrt(MaxN)
+        ! NoiseSim%TQU(:,4) = MaxN
+        !end where
+        !where (NoiseSim%TQU(:,2) /= fmissval)
+        ! SigNoiseSim%TQU(:,2) = Signal%TQU(:,2) + NoiseSim%TQU(:,2)
+        !elsewhere
+        ! SigNoiseSim%TQU(:,2) = Gaussian1()* sqrt(MaxNP)
+        ! NoiseSim%TQU(:,7) = MaxNP
+        !end where
+        !where (NoiseSim%TQU(:,3) /= fmissval)
+        ! SigNoiseSim%TQU(:,3) = Signal%TQU(:,3) + NoiseSim%TQU(:,3)
+        !elsewhere
+        ! SigNoiseSim%TQU(:,3) = Gaussian1()* sqrt(MaxNP)
+        ! NoiseSim%TQU(:,9) = MaxNP
+        !end where
+        !
+        fname = concat(trim(input_data_dir)//'tot_',detector,'.fits')
         call HealpixMap_Write(SigNoiseSim,fname, .true.)        
-
         end do
         call HealpixMap_Free(NoiseSim)
         call HealpixMap_Free(Noise)
@@ -2767,7 +2729,7 @@ program WeightMixer
  
      !print *,'start'
       if (add_planck_sim /= '') then
-      call AddPlanckSimMaps(H, add_planck_sim)
+      call AddPlanckSimMaps(H)
       call MpiStop()
       end if 
            
