@@ -5,26 +5,17 @@ F90C     = mpif90
 #F90C    = ifort
 
 healpix = $(HEALPIX)
-LAPACKL = -mkl=sequential -lmkl_lapack -lmpi -lhealpix
+LAPACKL = -mkl=sequential -lmpi -lhealpix -openmp
 
-#Had problems with -O3 using ifort 11.1 and 12; use -fast if cluster is homogeneous
+#remove -xHost if cluster is not homogeneous
 #add -DHEALPIXI4B if using older healpix and get errors about arguments not matching
-FFLAGS = -O2 -ip -fpp -error-limit 5 -DMPIPIX -DMPI -heap-arrays -DHEALPIXI4B
+FFLAGS = -O3 -xHost -fpp -error-limit 5 -DMPIPIX -DMPI -heap-arrays -openmp
 
-ifndef CFITSIO
-cfitsio = /usr/local/cfitsio/intel10/64/3.040/lib
-else
-cfitsio = $(CFITSIO)
-endif
+#cfitsio = /usr/local/Cluster-Apps/cfitsio/intel/3.300
+cfitsio ?= $(CFITSIO)
 
-#cosmos seems to have only openmp healpix installed
-ifneq ($(COSMOHOST),)
-F90C    = ifort
-FFLAGS += -openmp
-LINKFLAGS = -openmp
-endif
 
-F90FLAGS = $(FFLAGS) -I$(INCLUDE) -I$(healpix)/include -L$(cfitsio) -L$(healpix)/lib $(LAPACKL) -lcfitsio
+F90FLAGS = $(FFLAGS) -I$(INCLUDE) -I$(healpix)/include -L$(cfitsio)/lib -L$(healpix)/lib $(LAPACKL) -lcfitsio
 
 OBJFILES= toms760.o inifile.o utils.o spin_alm_tools.o \
    HealpixObj.o HealpixVis.o

@@ -24,7 +24,8 @@ module WeightMixing
  character(LEN=256) :: data_var = ''
  logical :: no_pix_window = .false.
  integer, parameter :: max_detectors = 8 
- integer:: nside, healpix_res, lmin,lmax, npix
+ integer:: nside, healpix_res, lmin,lmax
+ integer (I_NPIX) :: npix
  logical :: want_pol, est_noise
  real(dp) :: apodize_mask_fwhm
  integer :: pol_maps = 1
