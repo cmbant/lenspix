@@ -691,7 +691,8 @@ contains
      deallocate(LowLFidCov%C)
      deallocate(tmpSN)
      deallocate(tmpvec)
-     call HealpixVector2Alm(AlmVec, OutAlm, lmax_want)
+     call HealpixAlm_Init(OutAlm,lmax_want,1)
+     call HealpixVector2Alm(AlmVec, OutAlm, lmax_want,1)
      deallocate(AlmVec)
      
      end  subroutine GetFullSkyAlmEstimator   
