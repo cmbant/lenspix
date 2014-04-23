@@ -17,7 +17,7 @@
     implicit none
     character(LEN=*), parameter :: nulltest='nulltest'
     character(LEN=*), parameter :: pixtest='pixtest'
-    integer, parameter :fname_len = 1024
+    integer, parameter :: fname_len = 1024
 
     character(LEN=fname_len) :: data_dir = 'data/'
     character(LEN=fname_len) :: input_data_dir = ''
