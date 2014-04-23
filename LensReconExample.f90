@@ -1,3 +1,7 @@
+!Simple example code to simulate a lensed CMB map, then use it to do temperature quadratic lensing reconstruction
+!Not at all realistic (no masks, not even any simulated noise, only isotropic noise in the filter weights)
+!AL Apr 2014
+
     module Recon
     use HealpixObj
     use HealpixVis

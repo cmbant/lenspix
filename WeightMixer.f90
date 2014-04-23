@@ -87,7 +87,7 @@
     Type (TCouplingMatrix), dimension(:), pointer :: Coupler, XiMatrices
     Type(TCovMatSet), allocatable :: HybridMix(:)
     Type(HealpixMap), save :: SmoothedNoise
-    Type(TCrossBeamSet) :: CrossBeamSet
+    Type(TCrossBeamSet), target :: CrossBeamSet
 
     contains
 
@@ -325,7 +325,7 @@
     if (cross_beams) then
         do channel1 = 1, nchannels
             do channel2 = channel1, nchannels
-                associate(beam => CrossBeamSet%Beams(channel1,channel2))
+                associate(beam => CrossBeamSet%Beams(channel1,channel2)%Beam)
                     beam = beam * pixlw(0:lmax,1)
                     end associate
             end do
@@ -1607,7 +1607,7 @@
         AlmVec = AlmVec + AlmVec2
         deallocate(ALmVec2)
         print *, SN%DataProj%nl, SN%TheoryProj%nl, (l_low+1)**2, SN%TheoryProj%nr, SN%DataProj%nr
-        call HealpixVector2Alm(AlmVec, MapAProj, l_low)
+        call HealpixVector2Alm(AlmVec, MapAProj, l_low, polix=1)
 
         call HealpixAlm2Power(MapAProj,ProjCl)
 
@@ -1644,7 +1644,7 @@
         call HealpixVis_Map2ppmfile(ProjMap, concat(exact_stem,'lowl_map_highl.ppm'),symmetric=.true.)
         call HealpixVis_MapMask2ppm(ProjMap,WeightMap, concat(exact_stem,'lowl_map_highl_masked.ppm'),200.)
 
-        call HealpixVector2Alm(AlmVec, MapAProj, l_low)
+        call HealpixVector2Alm(AlmVec, MapAProj, l_low, polix=1)
 
         call HealpixMap2Alm(H,M,MapA,l_low)
         MapAProj%TEB = MapA%TEB - MapAProj%TEB
