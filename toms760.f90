@@ -3,7 +3,7 @@ MODULE Grid_Interpolation
 !      ALGORITHM 760, COLLECTED ALGORITHMS FROM ACM.
 !      THIS WORK PUBLISHED IN TRANSACTIONS ON MATHEMATICAL SOFTWARE,
 !      VOL. 22, NO. 3, September, 1996, P.  357--361.
-
+!AL Jun 2014: fixed f90 reshape
 IMPLICIT NONE
 
 Type Grid_Interpolation_Data
@@ -528,11 +528,8 @@ REAL(GI)    :: b00xa(4), b00ya(4), b01a(4), b10a(4), cxa(3,4), cya(3,4),   &
 !     .. Statement Functions ..
 ! REAL :: z2f,z3f
 !     ..
-! Data statements
-! DATA ((idlt(jxy,jpexy),jpexy=1,4),jxy=1,3)/-3,-2,-1,1,-2,-1,1,2,-1,1,2,3/
-INTEGER, SAVE  :: idlt(3,4) = RESHAPE(   &
-                  (/ -3,-2,-1, 1,-2,-1, 1,2,-1, 1,2,3 /), (/ 3, 4 /) )
-!     ..
+INTEGER, save :: idlt(3,4) = RESHAPE([-3, -2, -1, -2, -1, 1,-1, 1,2, 1 ,2, 3 ], [ 3, 4 ])
+    !AL Jun 14: Fixed F90 translation
 
 ! Calculation
 ! Initial setting of some local variables
