@@ -3,7 +3,7 @@
 F90C    = ifort
 
 healpix = $(HEALPIX)
-LAPACKL = -mkl=sequential -lhealpix
+LAPACKL = -mkl=parallel -lhealpix
 
 #remove -xHost if cluster is not homogeneous
 #add -DHEALPIXI4B if using older healpix and get errors about arguments not matching
