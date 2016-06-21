@@ -4,7 +4,7 @@ F90C     = mpif90
 #F90C    = ifort
 
 healpix = $(HEALPIX)
-LAPACKL = -mkl=sequential -lmpi -lhealpix -openmp
+LAPACKL = -mkl=sequential -lmpi -lhealpix
 
 #remove -xHost if cluster is not homogeneous
 #add -DHEALPIXI4B if using older healpix and get errors about arguments not matching
@@ -57,7 +57,7 @@ weightmixer: $(OBJFILESW)
 	$(F90C) -o weightmixer $(OBJFILESW) $(F90FLAGS) $(LINKFLAGS)
 
 EBsep: $(OBJFILESEB) 	
-	$(F90C) -o EBsep $(OBJFILESS) $(F90FLAGS) $(LINKFLAGS)
+	$(F90C) -o EBsep $(OBJFILESEB) $(F90FLAGS) $(LINKFLAGS)
 
 
 clean:
