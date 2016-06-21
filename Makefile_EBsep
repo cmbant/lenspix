@@ -20,9 +20,6 @@ OBJFILES= toms760.o inifile.o utils.o spin_alm_tools.o \
 
 OBJFILESEB = $(OBJFILES) Matrix_utils.o AsymmCouplings.o EBsep.o
 
-OBJFILESS = $(OBJFILES)  SimLens.o
-
-OBJFILESW = $(OBJFILES)  Matrix_utils.o PseudoCl.o AsymmCouplings.o SNModes.o TOMS642.o WeightMixer.o
 
 default: EBsep
 all: EBsep
@@ -48,12 +45,6 @@ EBsep.o: HealpixVis.o PseudoCl.o inifile.o AsymmCouplings.o
 %.o: %.F90
 	$(F90C) $(F90FLAGS) -c $*.F90
 
-
-simlens: $(OBJFILESS) 	
-	$(F90C) -o simlens $(OBJFILESS) $(F90FLAGS) $(LINKFLAGS)
-
-weightmixer: $(OBJFILESW) 	
-	$(F90C) -o weightmixer $(OBJFILESW) $(F90FLAGS) $(LINKFLAGS)
 
 EBsep: $(OBJFILESEB) 	
 	$(F90C) -o EBsep $(OBJFILESEB) $(F90FLAGS) $(LINKFLAGS)

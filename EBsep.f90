@@ -82,7 +82,6 @@
         print *, 'smooth fsky=',sum(Mask%TQU)/Mask%npix
     end if
 
-    !/scratch/maja1/planck/repository/exchanges/dx11/maps/hfi/HFI_SkyMap_353_2048_DX11c_full.fits
     if (.not. FileExists(matrix_name)) then
         !First get alm of mask
         !Calculate cut-sky coupling matrix
@@ -105,7 +104,6 @@
                 call Matrix_Mult_SymmLeft(Couplings2%WPAsymm,Proj%M, tmpM)
                 deallocate(Couplings2%WPAsymm)
                 allocate(RotW(Proj%nr,Proj%nr))
-                print *,'mult'
                 call Matrix_Mult_TN(tmpM,tmpM, rotW)
                 deallocate(tmpM)
                 print *,'norm'
@@ -176,6 +174,7 @@
 
     if (in_map /= '') then
         call HealpixMap_Read(LoadMap, in_map)
+        if (LoadMap%nmaps < 3) error stop 'Map has no polarization'
         if (in_map_diff/='') then
             call HealpixMap_Read(InMap, in_map_diff)
             LoadMap%TQU = (LoadMap%TQU - InMap%TQU)/2
