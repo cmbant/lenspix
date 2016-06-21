@@ -19,7 +19,7 @@ F90FLAGS = $(FFLAGS) -I$(INCLUDE) -I$(healpix)/include -L$(cfitsio)/lib -L$(heal
 OBJFILES= toms760.o inifile.o utils.o spin_alm_tools.o \
    HealpixObj.o HealpixVis.o
 
-OBJFILESEB = $(OBJFILES)  EBsep.o
+OBJFILESEB = $(OBJFILES) Matrix_utils.o AsymmCouplings.o EBsep.o
 
 OBJFILESS = $(OBJFILES)  SimLens.o
 
