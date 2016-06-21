@@ -1,14 +1,13 @@
 #now using v16+ intel ifort
 
-F90C     = mpif90
-#F90C    = ifort
+F90C    = ifort
 
 healpix = $(HEALPIX)
-LAPACKL = -mkl=sequential -lmpi -lhealpix
+LAPACKL = -mkl=sequential -lhealpix
 
 #remove -xHost if cluster is not homogeneous
 #add -DHEALPIXI4B if using older healpix and get errors about arguments not matching
-FFLAGS = -O3 -xHost -fpp -error-limit 5 -DMPIPIX -DMPI -heap-arrays -qopenmp
+FFLAGS = -O3 -xHost -fpp -error-limit 5 -heap-arrays -qopenmp
 
 #cfitsio = /usr/local/Cluster-Apps/cfitsio/intel/3.300
 cfitsio ?= $(CFITSIO)
