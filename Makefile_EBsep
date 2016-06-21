@@ -1,0 +1,64 @@
+#now using v16+ intel ifort
+
+F90C     = mpif90
+#F90C    = ifort
+
+healpix = $(HEALPIX)
+LAPACKL = -mkl=sequential -lmpi -lhealpix -openmp
+
+#remove -xHost if cluster is not homogeneous
+#add -DHEALPIXI4B if using older healpix and get errors about arguments not matching
+FFLAGS = -O3 -xHost -fpp -error-limit 5 -DMPIPIX -DMPI -heap-arrays -qopenmp
+
+#cfitsio = /usr/local/Cluster-Apps/cfitsio/intel/3.300
+cfitsio ?= $(CFITSIO)
+
+
+F90FLAGS = $(FFLAGS) -I$(INCLUDE) -I$(healpix)/include -L$(cfitsio)/lib -L$(healpix)/lib $(LAPACKL) -lcfitsio
+
+OBJFILES= toms760.o inifile.o utils.o spin_alm_tools.o \
+   HealpixObj.o HealpixVis.o
+
+OBJFILESEB = $(OBJFILES)  EBsep.o
+
+OBJFILESS = $(OBJFILES)  SimLens.o
+
+OBJFILESW = $(OBJFILES)  Matrix_utils.o PseudoCl.o AsymmCouplings.o SNModes.o TOMS642.o WeightMixer.o
+
+default: EBsep
+all: EBsep
+
+spin_alm_tools.o:  utils.o toms760.o
+HealpixObj.o: spin_alm_tools.o
+HealpixVis.o: HealpixObj.o
+AsymmCouplings.o: PseudoCl.o
+PseudoCl.o: Matrix_utils.o HealpixObj.o
+Matrix_utils.o: utils.o
+SNModes.o: AsymmCouplings.o
+
+WeightMixer.o: HealpixVis.o PseudoCl.o inifile.o AsymmCouplings.o
+SimLens.o: HealpixVis.o inifile.o
+EBsep.o: HealpixVis.o PseudoCl.o inifile.o AsymmCouplings.o
+
+.f.o:
+	f77 $(F90FLAGS) -c $<
+
+%.o: %.f90
+	$(F90C) $(F90FLAGS) -c $*.f90
+
+%.o: %.F90
+	$(F90C) $(F90FLAGS) -c $*.F90
+
+
+simlens: $(OBJFILESS) 	
+	$(F90C) -o simlens $(OBJFILESS) $(F90FLAGS) $(LINKFLAGS)
+
+weightmixer: $(OBJFILESW) 	
+	$(F90C) -o weightmixer $(OBJFILESW) $(F90FLAGS) $(LINKFLAGS)
+
+EBsep: $(OBJFILESEB) 	
+	$(F90C) -o EBsep $(OBJFILESS) $(F90FLAGS) $(LINKFLAGS)
+
+
+clean:
+	rm -f *.o* *.e* *.mod *.d *.pc *.obj core* *.il
