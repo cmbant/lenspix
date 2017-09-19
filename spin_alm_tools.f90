@@ -178,7 +178,7 @@
         COMPLEX(SPC), dimension(:), pointer :: grad_phiN => NULL() , grad_phiS => NULL()
     end  Type LensGradients
 
-    integer, parameter :: interp_edge = 2
+    integer, parameter :: interp_edge = 4
     !number of high-res pixels to go outside deflected region to get good interpolation
 
     integer, parameter :: EB_sign = -1
