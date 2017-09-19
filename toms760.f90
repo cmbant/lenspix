@@ -5,24 +5,25 @@ MODULE Grid_Interpolation
 !      VOL. 22, NO. 3, September, 1996, P.  357--361.
 !AL Jun 2014: fixed f90 reshape
 IMPLICIT NONE
+INTEGER, PARAMETER, public :: dp  = SELECTED_REAL_KIND(12,200)
 
 Type Grid_Interpolation_Data
      REAL, pointer :: wk(:,:,:) => NULL()
-     REAL, pointer :: x(:), y(:)
+     REAL(DP), pointer :: x(:), y(:)
      integer nx, ny     
     
 end Type Grid_Interpolation_Data
 
 
-integer, parameter :: GI = KIND(1.0)
+integer, parameter :: GI = KIND(1.0d0)
 
 CONTAINS
 
 !Utility wrappers by AL, 2012
 subroutine Grid_Interpolation_Init(W, x,y, z)
  Type(Grid_Interpolation_Data):: W
- REAL, INTENT(IN)      :: x(:)
- REAL, INTENT(IN)      :: y(:)
+ REAL(DP), INTENT(IN)      :: x(:)
+ REAL(DP), INTENT(IN)      :: y(:)
  REAL, INTENT(IN)  :: z(:,:)
  
  W%nx = size(x)
@@ -46,8 +47,10 @@ end subroutine Grid_Interpolation_Free
 
 function Grid_Interpolate(W,zin, x,y) result (res)
   Type(Grid_Interpolation_Data) :: W
-  real res, z(1), xx(1),yy(1)
-  real, intent(in) :: x,y, zin(:,:)
+  real res, z(1)
+  real(DP) xx(1),yy(1)
+  real(DP), intent(in) :: x,y
+  real, intent(in) :: zin(:,:)
   integer md,ier
   
   md=2
@@ -63,7 +66,8 @@ subroutine Grid_InterpolatePoints(W, zin, nip, x,y,z)
   Type(Grid_Interpolation_Data) :: W
   integer, intent(in) :: nip
   real, intent(out):: z(*)
-  real, intent(in) :: x(*),y(*), zin(:,:)
+  real, intent(in) :: zin(:,:)
+  real(dp), intent(in) :: x(*),y(*)
   integer md,ier
   
   md=2
@@ -153,12 +157,12 @@ SUBROUTINE rgbi3p(Wk,md, nxd, nyd, xd, yd, zd, nip, xi, yi, zi, ier)
 INTEGER, INTENT(IN)   :: md
 INTEGER, INTENT(IN)   :: nxd
 INTEGER, INTENT(IN)   :: nyd
-REAL, INTENT(IN)      :: xd(nxd)
-REAL, INTENT(IN)      :: yd(nyd)
+REAL(DP), INTENT(IN)      :: xd(nxd)
+REAL(DP), INTENT(IN)      :: yd(nyd)
 REAL, INTENT(IN)  :: zd(nxd,nyd)
 INTEGER, INTENT(IN)   :: nip
-REAL, INTENT(IN)  :: xi(nip)
-REAL, INTENT(IN)  :: yi(nip)
+REAL(DP), INTENT(IN)  :: xi(nip)
+REAL(DP), INTENT(IN)  :: yi(nip)
 REAL, INTENT(OUT)  :: zi(nip)
 INTEGER, INTENT(OUT)  :: ier
 REAL, INTENT(INOUT)  :: wk(3,nxd,nyd)
@@ -326,13 +330,13 @@ SUBROUTINE rgsf3p(wk, md, nxd, nyd, xd, yd, zd, nxi, xi, nyi, yi, zi, ier)
 INTEGER, INTENT(IN)   :: md
 INTEGER, INTENT(IN)   :: nxd
 INTEGER, INTENT(IN)   :: nyd
-REAL, INTENT(IN)      :: xd(nxd)
-REAL, INTENT(IN)      :: yd(nyd)
+REAL(DP), INTENT(IN)      :: xd(nxd)
+REAL(DP), INTENT(IN)      :: yd(nyd)
 REAL, INTENT(IN OUT)  :: zd(nxd,nyd)
 INTEGER, INTENT(IN)   :: nxi
-REAL, INTENT(IN OUT)  :: xi(nxi)
+REAL(DP), INTENT(IN OUT)  :: xi(nxi)
 INTEGER, INTENT(IN)   :: nyi
-REAL, INTENT(IN)      :: yi(nyi)
+REAL(DP), INTENT(IN)      :: yi(nyi)
 REAL, INTENT(IN OUT)  :: zi(nxi,nyi)
 INTEGER, INTENT(OUT)  :: ier
 REAL, INTENT(INOUT)  :: wk(3,nxd,nyd)
@@ -344,7 +348,7 @@ INTEGER, PARAMETER  :: nipimx=51
 INTEGER  :: ix, ixi, iy, iyi, nipi
 !     ..
 !     .. Local Arrays ..
-REAL     :: yii(nipimx)
+REAL(DP) :: yii(nipimx)
 INTEGER  :: inxi(nipimx), inyi(nipimx)
 
 !     ..
@@ -497,8 +501,8 @@ SUBROUTINE rgpd3p(nxd, nyd, xd, yd, zd, pdd)
 
 INTEGER, INTENT(IN)  :: nxd
 INTEGER, INTENT(IN)  :: nyd
-REAL, INTENT(IN)     :: xd(nxd)
-REAL, INTENT(IN)     :: yd(nyd)
+REAL(DP), INTENT(IN)     :: xd(nxd)
+REAL(DP), INTENT(IN)     :: yd(nyd)
 REAL, INTENT(IN)     :: zd(nxd,nyd)
 REAL, INTENT(OUT)    :: pdd(3,nxd,nyd)
 
@@ -983,17 +987,17 @@ SUBROUTINE rglctn(nxd, nyd, xd, yd, nip, xi, yi, inxi, inyi)
 
 INTEGER, INTENT(IN)   :: nxd
 INTEGER, INTENT(IN)   :: nyd
-REAL, INTENT(IN)      :: xd(nxd)
-REAL, INTENT(IN)      :: yd(nyd)
+REAL(DP), INTENT(IN)      :: xd(nxd)
+REAL(DP), INTENT(IN)      :: yd(nyd)
 INTEGER, INTENT(IN)   :: nip
-REAL, INTENT(IN)      :: xi(nip)
-REAL, INTENT(IN)      :: yi(nip)
+REAL(DP), INTENT(IN)      :: xi(nip)
+REAL(DP), INTENT(IN)      :: yi(nip)
 INTEGER, INTENT(OUT)  :: inxi(nip)
 INTEGER, INTENT(OUT)  :: inyi(nip)
 
 !     ..
 !     .. Local Scalars ..
-REAL     :: xii, yii
+REAL(DP)     :: xii, yii
 INTEGER  :: iip, imd, imn, imx, ixd, iyd, nintx, ninty
 
 !     ..
@@ -1133,13 +1137,13 @@ SUBROUTINE rgplnl(nxd, nyd, xd, yd, zd, pdd, nip, xi, yi, inxi, inyi, zi)
 
 INTEGER, INTENT(IN)  :: nxd
 INTEGER, INTENT(IN)  :: nyd
-REAL, INTENT(IN)     :: xd(nxd)
-REAL, INTENT(IN)     :: yd(nyd)
+REAL(DP), INTENT(IN)     :: xd(nxd)
+REAL(DP), INTENT(IN)     :: yd(nyd)
 REAL, INTENT(IN)     :: zd(nxd,nyd)
 REAL, INTENT(IN)     :: pdd(3,nxd,nyd)
 INTEGER, INTENT(IN)  :: nip
-REAL, INTENT(IN)     :: xi(nip)
-REAL, INTENT(IN)     :: yi(nip)
+REAL(DP), INTENT(IN)     :: xi(nip)
+REAL(DP), INTENT(IN)     :: yi(nip)
 INTEGER, INTENT(IN)  :: inxi(nip)
 INTEGER, INTENT(IN)  :: inyi(nip)
 REAL, INTENT(OUT)    :: zi(nip)

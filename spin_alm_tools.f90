@@ -5075,7 +5075,8 @@
     INTEGER(I4B) :: mmax_ring,par_lm, nlmax
 
     COMPLEX(SPC) :: this_grad
-    REAL(SP), dimension(:), allocatable ::  ring, theta_vals, &
+    REAL(SP), dimension(:), allocatable ::  ring
+    REAL(DP), dimension(:), allocatable ::  theta_vals, &
     phi_vals,theta_lensed_vals,phi_lensed_vals
 
     integer(I4B) high_nside
@@ -5483,7 +5484,8 @@
 
     REAL(DP), dimension(:), allocatable :: lam_fact
 
-    REAL(SP), dimension(:), allocatable ::  ring, theta_vals, &
+    REAL(SP), dimension(:), allocatable ::  ring
+    REAL(DP), dimension(:), allocatable ::  theta_vals, &
     phi_vals,theta_lensed_vals,phi_lensed_vals
 
     COMPLEX(SP), dimension(:), allocatable ::  polrot
