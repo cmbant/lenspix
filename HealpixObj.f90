@@ -1043,8 +1043,8 @@
         call InitRandom(seed)
     else
         if (.not. RandInited) call InitRandom
-        RandInited = .true.
     end if
+    RandInited = .true.
 
     wantpol = 1
 
@@ -1157,8 +1157,8 @@
         call InitRandom(seed)
     else
         if (.not. RandInited) call InitRandom
-        RandInited = .true.
     end if
+    RandInited = .true.
     call HealpixAlm_Init(A,P%lmax, 0,HasPhi = .true.)
     if (.not. P%lens) call MpiStop('must have phi power spectrum')
 
