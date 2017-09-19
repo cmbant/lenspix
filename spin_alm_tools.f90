@@ -5034,7 +5034,7 @@
     end subroutine cyl_interp_init
 
 
-    subroutine scalalm2LensedmapInterpCyl(H,inlmax, alm, grad_phi_map, map, nside_factor)
+    subroutine scalalm2LensedmapInterpCyl(H,inlmax, alm, grad_phi_map, map, nside_factor, interp_algo)
     !AL: Added Oct 2007
     !Temperature-only internally uses equi-cylindrical pix with bicubic interpolation
     use MPIstuff
@@ -5043,8 +5043,10 @@
 
     INTEGER(I4B), INTENT(IN) :: inlmax
     REAL(I4B), INTENT(IN), optional :: nside_factor
+    INTEGER, INTENT(IN), OPTIONAL :: interp_algo
 
     integer nsmax
+    integer algo
     real  :: nside_fac = 3.
     COMPLEX(SPC), INTENT(IN),  dimension(:,:,:) :: alm
     COMPLEX(SPC), INTENT(IN), dimension(0:H%npix-1), target :: grad_phi_map
@@ -5100,6 +5102,13 @@
     nlmax = inlmax
     if (present(nside_factor)) nside_fac = nside_factor
 
+    !By default use toms760 partial derivative scheme
+    if(present(interp_algo)) then
+        algo = interp_algo
+    else
+        algo = 1
+    endif
+
 #ifdef MPIPIX
     StartTime = Getetime()
     iniTime = StartTime
@@ -5109,6 +5118,7 @@
     end if
 
     call SyncInts(nlmax)
+    call SyncInts(algo)
     call SyncReals(nside_fac)
 #endif
 
@@ -5383,7 +5393,7 @@
             !Most of the time in this stage is spent in here. ~50x more than calculating angles.
             !Mostly in the first call calculating grid of second derivatives
             call rgbi3p(Work,InterpW, n_phi_cyl+interp_edge*2, cyl_end_edge-cyl_start_edge+1, phi_vals, theta_vals, &
-            high_res, nph, phi_lensed_vals, theta_lensed_vals, ring, ierror)
+            high_res, nph, phi_lensed_vals, theta_lensed_vals, ring, ierror, algo)
 
             ! ITPLBV is toms474, and older routine. Much faster, but not as accute
             ! and seems to be unstable to increasing the resolution

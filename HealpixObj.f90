@@ -1959,7 +1959,7 @@
         if (interp_method==interp_basic) then
             call scalalm2LensedmapInterp(H, A%lmax, A%TEB, GradPhi%SpinField, M%TQU, nint(factor))
         else
-            call scalalm2LensedmapInterpCyl(H, A%lmax, A%TEB, GradPhi%SpinField, M%TQU, factor)
+            call scalalm2LensedmapInterpCyl(H, A%lmax, A%TEB, GradPhi%SpinField, M%TQU, factor, algo)
         end if
     else
         if (interp_method==interp_basic) then
