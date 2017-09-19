@@ -1934,12 +1934,21 @@
 
     end subroutine  HealpixInterpLensedMap
 
-    subroutine  HealpixInterpLensedMap_GradPhi(H,A, GradPhi,M, factor, interp_method)
+    subroutine  HealpixInterpLensedMap_GradPhi(H,A, GradPhi,M, factor, interp_method, interp_algo)
     Type (HealpixInfo) :: H
     Type(HealpixMap) :: GradPhi, M
     Type(HealpixAlm), intent(in) :: A
     real, intent(in) :: factor
     integer, intent(in) :: interp_method
+    integer, intent(in), optional :: interp_algo
+    integer algo
+    
+    !By default use toms760 partial derivative scheme
+    if(present(interp_algo)) then
+        algo = interp_algo
+    else
+        algo = 1
+    endif
 
     call HealpixMap_Init(M,GradPhi%npix,nmaps = A%npol)
     if (GradPhi%spin /=1) call MpiStop('HealpixExactLensedMap: GradPhi must be spin 1 field')
@@ -1956,7 +1965,7 @@
         if (interp_method==interp_basic) then
             call alm2LensedmapInterp(H, A%lmax, A%TEB, GradPhi%SpinField, M%TQU, nint(factor))
         else
-            call alm2LensedmapInterpCyl(H, A%lmax, A%TEB, GradPhi%SpinField, M%TQU, factor)
+            call alm2LensedmapInterpCyl(H, A%lmax, A%TEB, GradPhi%SpinField, M%TQU, factor, algo)
         end if
     end if
     end subroutine  HealpixInterpLensedMap_GradPhi

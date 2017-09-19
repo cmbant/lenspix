@@ -5438,14 +5438,16 @@
     end subroutine scalalm2LensedmapInterpCyl
 
 
-    subroutine alm2LensedmapInterpCyl(H,inlmax, alm_TEB, grad_phi_map, map_TQU, nside_factor)
+    subroutine alm2LensedmapInterpCyl(H,inlmax, alm_TEB, grad_phi_map, map_TQU, nside_factor, interp_algo)
     use MPIstuff
     use Grid_Interpolation
     Type (HealpixInfo) :: H, H_res
     INTEGER(I4B), INTENT(IN) :: inlmax
     REAL(I4B), INTENT(IN), optional :: nside_factor
+    INTEGER, INTENT(IN), OPTIONAL :: interp_algo
 
     integer nsmax
+    integer algo
     real  :: nside_fac = 3.
     COMPLEX(SPC), INTENT(IN),  dimension(:,:,:) :: alm_TEB
     COMPLEX(SPC), INTENT(IN), dimension(0:H%npix-1), target :: grad_phi_map
@@ -5510,6 +5512,13 @@
     nlmax = inlmax
     if (present(nside_factor)) nside_fac = nside_factor
 
+    !By default use toms760 partial derivative scheme
+    if(present(interp_algo)) then
+        algo = interp_algo
+    else
+        algo = 1
+    endif
+
 #ifdef MPIPIX
     StartTime = Getetime()
     iniTime = StartTime
@@ -5519,6 +5528,7 @@
     end if
 
     call SyncInts(nlmax)
+    call SyncInts(algo)
     call SyncReals(nside_fac)
 #endif
 
@@ -5885,7 +5895,8 @@
             !Should probably try something faster
             do polix =1,3
                 call rgbi3p(Work(:,:,:,polix),InterpW, n_phi_cyl+interp_edge*2, cyl_end_edge-cyl_start_edge+1, &
-                phi_vals, theta_vals, high_res(:,:,polix), nph, phi_lensed_vals, theta_lensed_vals, ring, ierror)
+                phi_vals, theta_vals, high_res(:,:,polix), nph, phi_lensed_vals, theta_lensed_vals, ring, &
+                ierror, algo)
 
                 if (ierror/=0) then
                     write (*,*) code // ': Interpolation error', Ierror

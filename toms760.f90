@@ -77,7 +77,7 @@ subroutine Grid_InterpolatePoints(W, zin, nip, x,y,z)
 end subroutine Grid_InterpolatePoints
 
 
-SUBROUTINE rgbi3p(Wk,md, nxd, nyd, xd, yd, zd, nip, xi, yi, zi, ier)
+SUBROUTINE rgbi3p(Wk,md, nxd, nyd, xd, yd, zd, nip, xi, yi, zi, ier, interp_algo)
  
 ! Code converted using TO_F90 by Alan Miller
 ! Date: 2003-06-11  Time: 10:11:03
@@ -123,6 +123,8 @@ SUBROUTINE rgbi3p(Wk,md, nxd, nyd, xd, yd, zd, nip, xi, yi, zi, ier)
 !         of the output points,
 !   YI  = array of dimension NIP containing the y coordinates
 !         of the output points.
+!   INTERP_ALGO = (optional) 1 if we want to use toms760 calculation 
+!         of partial derivatives, 2 for simpler scheme.
 
 ! The output arguments are
 !   ZI  = array of dimension NIP where the interpolated z
@@ -166,10 +168,12 @@ REAL(DP), INTENT(IN)  :: yi(nip)
 REAL, INTENT(OUT)  :: zi(nip)
 INTEGER, INTENT(OUT)  :: ier
 REAL, INTENT(INOUT)  :: wk(3,nxd,nyd)
+INTEGER, INTENT(IN), OPTIONAL :: interp_algo
 
 !     ..
 !     .. Local Scalars ..
 INTEGER, PARAMETER  :: nipimx=51
+INTEGER :: algo
 
 INTEGER  :: iip, ix, iy, nipi
 !     ..
@@ -183,6 +187,13 @@ INTEGER  :: inxi(nipimx), inyi(nipimx)
 !     .. Intrinsic Functions ..
 ! INTRINSIC        MIN
 !     ..
+
+!By default use toms760 partial derivative scheme
+if(present(interp_algo)) then
+    algo = interp_algo
+else
+    algo = 1
+endif
 
 ! Preliminary processing
 ! Error check
@@ -200,7 +211,14 @@ ier = 0
 ! Calculation
 ! Estimates partial derivatives at all input-grid data points (for MD=1).
 IF (md /= 2) THEN
-  CALL rgpd3p(nxd, nyd, xd, yd, zd, wk)
+  IF(algo .EQ. 1) THEN
+      CALL rgpd3p(nxd, nyd, xd, yd, zd, wk)
+  ELSE IF(algo .EQ. 2) THEN
+      CALL rgpd3p_new(nxd, nyd, xd, yd, zd, wk)
+  ELSE
+      WRITE(*,*) 'RGBI3P: Unknown partial derivative calculation'
+      STOP
+  END IF
 END IF
 
 ! DO-loop with respect to the output point
@@ -1350,5 +1368,152 @@ END DO
 
 RETURN
 END SUBROUTINE rgplnl
+
+SUBROUTINE rgpd3p_new(nxd, nyd, xd, yd, zd, pdd)
+
+! This subroutine estimates three partial derivatives, zx, zy, and
+! zxy, of a bivariate function, z(x,y), on a regular rectangular grid in
+! the x-y plane. 
+
+! Less precise than rgpd3p but faster
+
+! The input arguments are
+!   NXD = number of the input-grid data points in the x
+!         coordinate (must be 2 or greater),
+!   NYD = number of the input-grid data points in the y
+!         coordinate (must be 2 or greater),
+!   XD  = array of dimension NXD containing the x coordinates of the
+!         input-grid data points (must be in a monotonic increasing order),
+!   YD  = array of dimension NYD containing the y coordinates of the
+!         input-grid data points (must be in a monotonic increasing order),
+!   ZD  = two-dimensional array of dimension NXD*NYD
+!         containing the z(x,y) values at the input-grid data points.
+
+! The output argument is
+!   PDD = three-dimensional array of dimension 3*NXD*NYD,
+!         where the estimated zx, zy, and zxy values at the
+!         input-grid data points are to be stored.
+
+! Specification statements
+!     .. Scalar Arguments ..
+
+INTEGER, INTENT(IN)  :: nxd
+INTEGER, INTENT(IN)  :: nyd
+REAL(DP), INTENT(IN)     :: xd(nxd)
+REAL(DP), INTENT(IN)     :: yd(nyd)
+REAL, INTENT(IN)     :: zd(nxd,nyd)
+REAL, INTENT(OUT)    :: pdd(3,nxd,nyd)
+
+double precision :: dx, dy
+integer :: iy0, ix0
+
+
+! Double DO-loop with respect to the input grid points - innermost
+DO  iy0 = 3,nyd-2
+  DO  ix0 = 3,nxd-2
+    dx = xd(ix0+1) - xd(ix0)
+    dy = yd(iy0+1) - yd(iy0)
+    pdd(:, ix0, iy0) = partial_derivatives_5by5(zd(ix0-2:ix0+2, iy0-2:iy0+2), dx, dy)
+  END DO
+END DO
+! On the boundaries we can not do 5*5 determination
+! Could do better but this should be good enough
+DO  ix0 = 2,nxd-1
+    dx = xd(ix0+1) - xd(ix0)
+    dy = yd(3) - yd(2)
+    pdd(:, ix0, 2) = partial_derivatives_3by3(zd(ix0-1:ix0+1, 1:3), dx, dy)
+    dy = yd(nyd) - yd(nyd-1)
+    pdd(:, ix0, nyd-1) = partial_derivatives_3by3(zd(ix0-1:ix0+1, nyd-2:nyd), dx, dy)
+END DO
+
+DO  iy0 = 3,nyd-2
+    dx = xd(3) - xd(2)
+    dy = yd(iy0+1) - yd(iy0)
+    pdd(:, 2, iy0) = partial_derivatives_3by3(zd(1:3, iy0-1:iy0+1), dx, dy)
+    dx = xd(nxd) - xd(nxd-1)
+    pdd(:, nxd-1, iy0) = partial_derivatives_3by3(zd(nxd-2:nxd, iy0-1:iy0+1), dx, dy)
+END DO
+
+!At the edges extremely imprecise
+DO  ix0 = 2,nxd-1
+    pdd(:, ix0, 1) = pdd(:, ix0, 2)
+    pdd(:, ix0, nyd) = pdd(:, ix0, nyd-1)
+END DO
+DO  iy0 = 2,nyd-1
+    pdd(:, 1, iy0) = pdd(:, 2, iy0)
+    pdd(:, nxd, iy0) = pdd(:, nxd-1, iy0)
+END DO
+!And in the corners even more
+pdd(:, 1, 1) = pdd(:, 2, 2)
+pdd(:, nxd, 1) = pdd(:, nxd-1, 2)
+pdd(:, 1, nyd) = pdd(:, 2, nyd-1)
+pdd(:, nxd, nyd) = pdd(:, nxd-1, nyd-1)
+
+RETURN
+
+END SUBROUTINE rgpd3p_new
+
+function partial_derivatives_5by5(z, dx, dy) result(pdd)
+! Partial derivatives z_x, z_y and z_xy in the middle point,
+! given function values on a regular 5*5 grid
+
+! The input arguments are
+!   Z = 5*5 array of function values on a regular grid
+!   DX, DY = size of the step in the x, y directions
+
+! The output vector with z_x, z_y and z_xy in the middle point
+REAL(DP), INTENT(IN)     :: dx, dy
+REAL, INTENT(IN)     :: z(-2:2, -2:2)
+real :: pdd(3)
+
+    pdd(1) = (z(-2,0) - 8d0*z(-1,0) +8d0*z(1,0) - z(2,0))/12.d0/dx
+    pdd(2) = (z(0,-2) - 8d0*z(0,-1) +8d0*z(0,1) - z(0,2))/12.d0/dy
+    pdd(3) = ( &
+            z(-2,-2) - 8d0*z(-2,-1) + 8d0*z(-2,1) - z(-2,2) &
+            -8d0*z(-1,-2) + 64d0*z(-1,-1) - 64d0*z(-1,1) + 8d0*z(-1,2) &
+            +8d0*z(1, -2) - 64d0*z(1, -1) + 64d0*z(1,1) - 8d0*z(1,2)  &
+            -z(2,-2) + 8d0*z(2,-1) - 8d0*z(2,1) + z(2,2) &
+            )/144d0/dx/dy
+
+end function partial_derivatives_5by5 
+
+function partial_derivatives_3by3(z, dx, dy) result(pdd)
+! Partial derivatives z_x, z_y and z_xy in the middle point,
+! given function values on a regular 3*3 grid
+
+! The input arguments are
+!   Z = 3*3 array of function values on a regular grid
+!   DX, DY = size of the step in the x, y directions
+
+! The output vector with z_x, z_y and z_xy in the middle point
+REAL(DP), INTENT(IN)     :: dx, dy
+REAL, INTENT(IN)     :: z(-1:1, -1:1)
+real :: pdd(3)
+
+    pdd(1) = (z(1,0) - z(-1,0))/2d0/dx
+    pdd(2) = (z(0,1) - z(0,-1))/2d0/dy
+    pdd(3) = (z(1,1) + z(-1,-1) - z(-1,1) - z(1,-1))/4d0/dx/dy
+
+end function partial_derivatives_3by3 
+
+function partial_derivatives_2by2(z, dx, dy) result(pdd)
+! Partial derivatives z_x, z_y and z_xy, given function values on a rectangle
+! This is extremely imprecise, so it does not matter at which point we evaluate
+
+! The input arguments are
+!   Z = 2*2 array of function values on a regular grid
+!   DX, DY = size of the step in the x, y directions
+
+! The output vector with z_x, z_y and z_xy (extremely imprecise)
+
+REAL(DP), INTENT(IN)     :: dx, dy
+REAL, INTENT(IN)     :: z(1:2, 1:2)
+real :: pdd(3)
+
+    pdd(1) = (z(2,1) - z(1,1))/dx
+    pdd(2) = (z(1,2) - z(1,1))/dy
+    pdd(3) = (z(2,2) + z(1,1) - z(2,1) - z(1,2))/dx/dy
+
+end function partial_derivatives_2by2 
 
 END MODULE Grid_Interpolation
