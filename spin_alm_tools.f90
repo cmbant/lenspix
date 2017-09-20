@@ -178,7 +178,7 @@
         COMPLEX(SPC), dimension(:), pointer :: grad_phiN => NULL() , grad_phiS => NULL()
     end  Type LensGradients
 
-    integer, parameter :: interp_edge = 2
+    integer, parameter :: interp_edge = 4
     !number of high-res pixels to go outside deflected region to get good interpolation
 
     integer, parameter :: EB_sign = -1
@@ -5034,7 +5034,7 @@
     end subroutine cyl_interp_init
 
 
-    subroutine scalalm2LensedmapInterpCyl(H,inlmax, alm, grad_phi_map, map, nside_factor)
+    subroutine scalalm2LensedmapInterpCyl(H,inlmax, alm, grad_phi_map, map, nside_factor, interp_algo)
     !AL: Added Oct 2007
     !Temperature-only internally uses equi-cylindrical pix with bicubic interpolation
     use MPIstuff
@@ -5043,8 +5043,10 @@
 
     INTEGER(I4B), INTENT(IN) :: inlmax
     REAL(I4B), INTENT(IN), optional :: nside_factor
+    INTEGER, INTENT(IN), OPTIONAL :: interp_algo
 
     integer nsmax
+    integer algo
     real  :: nside_fac = 3.
     COMPLEX(SPC), INTENT(IN),  dimension(:,:,:) :: alm
     COMPLEX(SPC), INTENT(IN), dimension(0:H%npix-1), target :: grad_phi_map
@@ -5075,7 +5077,8 @@
     INTEGER(I4B) :: mmax_ring,par_lm, nlmax
 
     COMPLEX(SPC) :: this_grad
-    REAL(SP), dimension(:), allocatable ::  ring, theta_vals, &
+    REAL(SP), dimension(:), allocatable ::  ring
+    REAL(DP), dimension(:), allocatable ::  theta_vals, &
     phi_vals,theta_lensed_vals,phi_lensed_vals
 
     integer(I4B) high_nside
@@ -5099,6 +5102,13 @@
     nlmax = inlmax
     if (present(nside_factor)) nside_fac = nside_factor
 
+    !By default use toms760 partial derivative scheme
+    if(present(interp_algo)) then
+        algo = interp_algo
+    else
+        algo = 1
+    endif
+
 #ifdef MPIPIX
     StartTime = Getetime()
     iniTime = StartTime
@@ -5108,6 +5118,7 @@
     end if
 
     call SyncInts(nlmax)
+    call SyncInts(algo)
     call SyncReals(nside_fac)
 #endif
 
@@ -5382,7 +5393,7 @@
             !Most of the time in this stage is spent in here. ~50x more than calculating angles.
             !Mostly in the first call calculating grid of second derivatives
             call rgbi3p(Work,InterpW, n_phi_cyl+interp_edge*2, cyl_end_edge-cyl_start_edge+1, phi_vals, theta_vals, &
-            high_res, nph, phi_lensed_vals, theta_lensed_vals, ring, ierror)
+            high_res, nph, phi_lensed_vals, theta_lensed_vals, ring, ierror, algo)
 
             ! ITPLBV is toms474, and older routine. Much faster, but not as accute
             ! and seems to be unstable to increasing the resolution
@@ -5437,14 +5448,16 @@
     end subroutine scalalm2LensedmapInterpCyl
 
 
-    subroutine alm2LensedmapInterpCyl(H,inlmax, alm_TEB, grad_phi_map, map_TQU, nside_factor)
+    subroutine alm2LensedmapInterpCyl(H,inlmax, alm_TEB, grad_phi_map, map_TQU, nside_factor, interp_algo)
     use MPIstuff
     use Grid_Interpolation
     Type (HealpixInfo) :: H, H_res
     INTEGER(I4B), INTENT(IN) :: inlmax
     REAL(I4B), INTENT(IN), optional :: nside_factor
+    INTEGER, INTENT(IN), OPTIONAL :: interp_algo
 
     integer nsmax
+    integer algo
     real  :: nside_fac = 3.
     COMPLEX(SPC), INTENT(IN),  dimension(:,:,:) :: alm_TEB
     COMPLEX(SPC), INTENT(IN), dimension(0:H%npix-1), target :: grad_phi_map
@@ -5483,7 +5496,8 @@
 
     REAL(DP), dimension(:), allocatable :: lam_fact
 
-    REAL(SP), dimension(:), allocatable ::  ring, theta_vals, &
+    REAL(SP), dimension(:), allocatable ::  ring
+    REAL(DP), dimension(:), allocatable ::  theta_vals, &
     phi_vals,theta_lensed_vals,phi_lensed_vals
 
     COMPLEX(SP), dimension(:), allocatable ::  polrot
@@ -5508,6 +5522,13 @@
     nlmax = inlmax
     if (present(nside_factor)) nside_fac = nside_factor
 
+    !By default use toms760 partial derivative scheme
+    if(present(interp_algo)) then
+        algo = interp_algo
+    else
+        algo = 1
+    endif
+
 #ifdef MPIPIX
     StartTime = Getetime()
     iniTime = StartTime
@@ -5517,6 +5538,7 @@
     end if
 
     call SyncInts(nlmax)
+    call SyncInts(algo)
     call SyncReals(nside_fac)
 #endif
 
@@ -5883,7 +5905,8 @@
             !Should probably try something faster
             do polix =1,3
                 call rgbi3p(Work(:,:,:,polix),InterpW, n_phi_cyl+interp_edge*2, cyl_end_edge-cyl_start_edge+1, &
-                phi_vals, theta_vals, high_res(:,:,polix), nph, phi_lensed_vals, theta_lensed_vals, ring, ierror)
+                phi_vals, theta_vals, high_res(:,:,polix), nph, phi_lensed_vals, theta_lensed_vals, ring, &
+                ierror, algo)
 
                 if (ierror/=0) then
                     write (*,*) code // ': Interpolation error', Ierror

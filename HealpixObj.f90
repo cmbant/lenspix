@@ -1043,8 +1043,8 @@
         call InitRandom(seed)
     else
         if (.not. RandInited) call InitRandom
-        RandInited = .true.
     end if
+    RandInited = .true.
 
     wantpol = 1
 
@@ -1093,13 +1093,22 @@
             Bamp = sqrt(P%cl(l,C_B))
             g = Gaussian1()
             if (wantphi) A%Phi(1,l,0) = g
-            A%TEB(2,l,0) = Corr*A%TEB(1,l,0) + real(g)*xamp
+            if (p%cl(l, C_T)*p%cl(l, C_E) - p%cl(l, C_C)**2 .lt. 0.d0) then
+                write(*,*) 'Warning: CTT*CEE - CTE**2 < 0 at ', l
+                A%TEB(2,l,0) = 0
+            else
+                A%TEB(2,l,0) = Corr*A%TEB(1,l,0) + real(g)*xamp
+            endif
             A%TEB(3,l,0)=  Bamp*Gaussian1()
             xamp = xamp / sqrt2
             Bamp = Bamp /sqrt2
             do m =1, l
                 g = cmplx(Gaussian1(),Gaussian1())
-                A%TEB(2,l,m) = corr*A%TEB(1,l,m) + g*xamp
+                if (p%cl(l, C_T)*p%cl(l, C_E) - p%cl(l, C_C)**2 .lt. 0.d0) then
+                    A%TEB(2,l,m) = 0.
+                else
+                    A%TEB(2,l,m) = corr*A%TEB(1,l,m) + g*xamp
+                endif
                 A%TEB(3,l,m) = Bamp*cmplx(Gaussian1(),Gaussian1())
                 if (wantphi) A%Phi(1,l,m) = g
             end do
@@ -1123,6 +1132,10 @@
                 corr = P%PhiCl(l,2)/tamp
                 if (wantpol >=3 .and. l>=2) then
                     Examp = (P%PhiCl(l,3)-corr*P%cl(l,C_C))*sqrt( tamp/(p%cl(l,C_E)*tamp - p%cl(l,C_C)**2))
+                    !To protect against numerical artifacts if CTT*CEE - CTE^2 <= 0
+                    if (p%cl(l, C_T)*p%cl(l, C_E) - p%cl(l, C_C)**2 .lt. 0.d0) then
+                        Examp = 0.
+                    endif
                     xamp = sqrt(max(0._sp, P%PhiCl(l,1) - corr*P%PhiCl(l,2) - Examp**2 ))
                     A%Phi(1,l,0) =  Examp * A%Phi(1,l,0)
                     Examp = Examp/sqrt2
@@ -1157,8 +1170,8 @@
         call InitRandom(seed)
     else
         if (.not. RandInited) call InitRandom
-        RandInited = .true.
     end if
+    RandInited = .true.
     call HealpixAlm_Init(A,P%lmax, 0,HasPhi = .true.)
     if (.not. P%lens) call MpiStop('must have phi power spectrum')
 
@@ -1921,12 +1934,21 @@
 
     end subroutine  HealpixInterpLensedMap
 
-    subroutine  HealpixInterpLensedMap_GradPhi(H,A, GradPhi,M, factor, interp_method)
+    subroutine  HealpixInterpLensedMap_GradPhi(H,A, GradPhi,M, factor, interp_method, interp_algo)
     Type (HealpixInfo) :: H
     Type(HealpixMap) :: GradPhi, M
     Type(HealpixAlm), intent(in) :: A
     real, intent(in) :: factor
     integer, intent(in) :: interp_method
+    integer, intent(in), optional :: interp_algo
+    integer algo
+    
+    !By default use toms760 partial derivative scheme
+    if(present(interp_algo)) then
+        algo = interp_algo
+    else
+        algo = 1
+    endif
 
     call HealpixMap_Init(M,GradPhi%npix,nmaps = A%npol)
     if (GradPhi%spin /=1) call MpiStop('HealpixExactLensedMap: GradPhi must be spin 1 field')
@@ -1937,13 +1959,13 @@
         if (interp_method==interp_basic) then
             call scalalm2LensedmapInterp(H, A%lmax, A%TEB, GradPhi%SpinField, M%TQU, nint(factor))
         else
-            call scalalm2LensedmapInterpCyl(H, A%lmax, A%TEB, GradPhi%SpinField, M%TQU, factor)
+            call scalalm2LensedmapInterpCyl(H, A%lmax, A%TEB, GradPhi%SpinField, M%TQU, factor, algo)
         end if
     else
         if (interp_method==interp_basic) then
             call alm2LensedmapInterp(H, A%lmax, A%TEB, GradPhi%SpinField, M%TQU, nint(factor))
         else
-            call alm2LensedmapInterpCyl(H, A%lmax, A%TEB, GradPhi%SpinField, M%TQU, factor)
+            call alm2LensedmapInterpCyl(H, A%lmax, A%TEB, GradPhi%SpinField, M%TQU, factor, algo)
         end if
     end if
     end subroutine  HealpixInterpLensedMap_GradPhi

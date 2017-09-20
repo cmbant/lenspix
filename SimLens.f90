@@ -21,7 +21,7 @@
     integer, parameter :: lens_interp =1, lens_exact = 2
     integer :: lens_method = lens_interp
     integer :: mpi_division_method = division_equalrows
-    integer ::  interp_method,  rand_seed
+    integer ::  interp_method,  rand_seed, interp_algo
     logical :: err, want_pol
     real :: interp_factor
     integer status
@@ -51,6 +51,7 @@
     rand_seed = Ini_Read_Int('rand_seed')
 
     interp_method = Ini_read_int('interp_method')
+    interp_algo = Ini_read_int('interp_algo')
 
     Ini_Fail_On_Not_Found = .false.
 
@@ -64,8 +65,14 @@
 
     call Ini_Close
 
-    file_stem =  trim(out_file_root)//'_lmax'//trim(IntToStr(lmax))//'_nside'//trim(IntTOStr(nside))// &
-    '_interp'//trim(RealToStr(interp_factor,3))//'_method'//trim(IntToStr(interp_method))//'_'
+    if (interp_algo == 1) then
+        file_stem =  trim(out_file_root)//'_lmax'//trim(IntToStr(lmax))//'_nside'//trim(IntTOStr(nside))// &
+        '_interp'//trim(RealToStr(interp_factor,3))//'_method'//trim(IntToStr(interp_method))//'_'
+    else
+        file_stem =  trim(out_file_root)//'_lmax'//trim(IntToStr(lmax))//'_nside'//trim(IntTOStr(nside))// &
+        '_interp'//trim(RealToStr(interp_factor,3))//'_method'//trim(IntToStr(interp_method))//'_algo'//&
+        trim(IntToStr(interp_algo))//'_'
+    endif
 
     if (want_pol) file_stem=trim(file_stem)//'pol_'
     file_stem = trim(file_stem)//trim(IntToStr(lens_method)) 
@@ -108,7 +115,7 @@
         if (lens_method == lens_exact) then
             call HealpixExactLensedMap_GradPhi(H,A,GradPhi,M)
         else if (lens_method == lens_interp) then
-            call HealpixInterpLensedMap_GradPhi(H,A,GradPhi, M, interp_factor, interp_method)
+            call HealpixInterpLensedMap_GradPhi(H,A,GradPhi, M, interp_factor, interp_method, interp_algo)
         else
             stop 'unknown lens_method'
         end if
