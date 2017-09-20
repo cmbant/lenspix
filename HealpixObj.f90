@@ -1133,7 +1133,7 @@
                 if (wantpol >=3 .and. l>=2) then
                     Examp = (P%PhiCl(l,3)-corr*P%cl(l,C_C))*sqrt( tamp/(p%cl(l,C_E)*tamp - p%cl(l,C_C)**2))
                     !To protect against numerical artifacts if CTT*CEE - CTE^2 <= 0
-                    if (Examp .ne. Examp) then
+                    if (p%cl(l, C_T)*p%cl(l, C_E) - p%cl(l, C_C)**2 .lt. 0.d0) then
                         Examp = 0.
                     endif
                     xamp = sqrt(max(0._sp, P%PhiCl(l,1) - corr*P%PhiCl(l,2) - Examp**2 ))
